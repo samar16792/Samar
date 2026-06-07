@@ -1,1139 +1,1200 @@
 """
-J.A.R.V.I.S - HOLOGRAPHIC AI INTERFACE
-Iron Man's JARVIS-Inspired Holographic Interface with Advanced Animations
-Real voice synthesis and premium holographic effects
+J.A.R.V.I.S — HOLOGRAPHIC AI INTERFACE v5.1
+Complete HUD Revamp with Massive Arc Reactor
+Iron Man Aesthetic | Futuristic UI | 5-Ring Arc Reactor
+FIXED: Complete responses, faster first message, faster voice chat, Mohali weather
 """
 
-import sys
-import os
-import json
-import requests
-import urllib.parse
-import threading
-import multiprocessing
-import queue
-import subprocess
+import sys, os, json, requests, urllib.parse, threading, multiprocessing
+import queue, subprocess, math, hashlib, random, platform, webbrowser
 from datetime import datetime
-import math
-import hashlib
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QFrame, QSizePolicy,
-    QListWidget, QListWidgetItem, QScrollArea
+    QListWidget, QListWidgetItem, QScrollArea, QStackedWidget,
+    QGraphicsOpacityEffect, QGridLayout, QProgressBar, QSlider,
+    QSpacerItem, QTextEdit, QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QSize, QPointF, QRectF
+    Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF,
+    QPropertyAnimation, QEasingCurve, QParallelAnimationGroup,
+    QSize, QUrl, QRect
 )
 from PyQt6.QtGui import (
-    QFont, QColor, QPainter, QBrush, QLinearGradient, QPalette, QPen,
-    QClipboard, QRadialGradient
+    QFont, QColor, QPainter, QBrush, QLinearGradient, QPalette,
+    QPen, QRadialGradient, QConicalGradient, QFontDatabase, QPolygonF,
+    QPainterPath, QDesktopServices, QPixmap, QIcon
 )
 
-
-# ─────────────────────────────────────────────────────────
-#  CONSTANTS
-# ─────────────────────────────────────────────────────────
-PARTICLE_COUNT = 35
-ANIMATION_FPS = 50
+# ═══════════════════════════════════════════════════════════
+#  CONSTANTS — FIXED: Higher token limits, faster response
+# ═══════════════════════════════════════════════════════════
+PARTICLE_COUNT       = 50
+ANIMATION_FPS        = 60
 MODEL_WARMUP_ENABLED = True
-HISTORY_DIR = os.path.expanduser("~/.jarvis_chats")
-VOICE_CACHE = os.path.expanduser("~/piper_voices/cache/")
+OLLAMA_MODEL         = "qwen2.5:3b"
+HISTORY_DIR          = os.path.expanduser("~/.jarvis_chats")
+VOICE_CACHE          = os.path.expanduser("~/piper_voices/cache/")
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(VOICE_CACHE, exist_ok=True)
+PIPER_VOICE_MODEL    = os.path.expanduser(
+    "~/piper_voices/en_GB-northern_english_male-medium.onnx")
+USER_NAME = "SAMAR"
+OS_VERSION = "v2.6.2"
 
-# Piper TTS configuration
-PIPER_VOICE_MODEL = os.path.expanduser("~/piper_voices/en_GB-northern_english_male-medium.onnx")
+# FIXED: Higher token limits to prevent incomplete responses
+MAX_TOKENS_TEXT      = 2048
+MAX_TOKENS_VOICE     = 300   # voice answers should be short and punchy
+CTX_SIZE_SMALL       = 2048  # enough for voice prompt + short history without KV cache miss
+CTX_SIZE_LARGE       = 4096
+OLLAMA_KEEP_ALIVE    = "30m"
+OLLAMA_TIMEOUT       = 180
+
+# FIXED: Faster response settings
+TEMPERATURE          = 0.6
+TOP_P                = 0.85
+TOP_K                = 30
+REPEAT_PENALTY       = 1.05
+
+# Weather location
+WEATHER_LOCATION     = "Mohali,Punjab,India"
+WEATHER_REFRESH_MS   = 15 * 60 * 1000
+
+# Enhanced Color Palette
+C_CYAN       = QColor(0, 212, 255)
+C_CYAN2      = QColor(0, 150, 200)
+C_CYAN_DIM   = QColor(0, 100, 150)
+C_GOLD       = QColor(255, 180, 0)
+C_GREEN      = QColor(0, 255, 136)
+C_RED        = QColor(255, 59, 48)
+C_BG         = QColor(2, 6, 14)
+C_PANEL      = QColor(4, 14, 30)
+C_BORDER     = QColor(0, 150, 200, 80)
+C_WHITE      = QColor(240, 250, 255)
+C_GLOW       = QColor(0, 212, 255, 60)
+C_BRIGHT     = QColor(0, 229, 255, 200)
+
+# ═══════════════════════════════════════════════════════════
+#  FONT HELPERS
+# ═══════════════════════════════════════════════════════════
+def _mono(size, bold=False):
+    return QFont("Courier New", size, QFont.Weight.Bold if bold else QFont.Weight.Normal)
+
+def _orbitron(size, bold=False):
+    f = QFont("Orbitron", size)
+    f.setBold(bold)
+    return f
+
+def _orbitron_c(size, bold=False): return _fc("Orbitron", size, bold)
+
+def _register_fonts():
+    """Register custom fonts with Qt so they're found without system font cache."""
+    from PyQt6.QtGui import QFontDatabase
+    font_dir = os.path.expanduser("~/Library/Fonts/")
+    for fname in ["Orbitron-Regular.ttf", "Orbitron-Bold.ttf", "Orbitron-Black.ttf"]:
+        path = os.path.join(font_dir, fname)
+        if os.path.exists(path):
+            QFontDatabase.addApplicationFont(path)
+
+# Call immediately after QApplication is created — before any widgets
 
 
-# ─────────────────────────────────────────────────────────
-#  CHAT HISTORY STORAGE
-# ─────────────────────────────────────────────────────────
+def _rajdhani(size, bold=False):
+    f = QFont("Rajdhani", size)
+    f.setBold(bold)
+    return f
+
+# Pre-built font cache — avoids per-frame QFont allocations and missing-font alias lookups
+_FONT_CACHE = {}
+def _fc(family, size, bold=False):
+    key = (family, size, bold)
+    if key not in _FONT_CACHE:
+        f = QFont(family, size, QFont.Weight.Bold if bold else QFont.Weight.Normal)
+        _FONT_CACHE[key] = f
+    return _FONT_CACHE[key]
+
+def _mono_c(size, bold=False):   return _fc("Courier New", size, bold)
+def _rajdhani_c(size, bold=False): return _fc("Rajdhani", size, bold)
+
+def _label(text, size=8, color="rgba(0,212,255,200)", bold=False, spacing="1px"):
+    l = QLabel(text)
+    l.setFont(_mono(size, bold))
+    l.setStyleSheet(f"color:{color};background:transparent;border:none;")
+    return l
+
+# ═══════════════════════════════════════════════════════════
+#  SYSTEM UTILITIES
+# ═══════════════════════════════════════════════════════════
+def _open_path(path):
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", path], check=False)
+        elif sys.platform == "win32":
+            os.startfile(path)
+        else:
+            subprocess.run(["xdg-open", path], check=False)
+    except Exception:
+        pass
+
+def _open_url(url):
+    webbrowser.open(url)
+
+def _run_app(cmd):
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+SHORTCUT_ACTIONS = {
+    "Documents": lambda: _open_path(os.path.expanduser("~/Documents")),
+    "Downloads": lambda: _open_path(os.path.expanduser("~/Downloads")),
+    "Videos":    lambda: _open_path(os.path.expanduser("~/Movies")),
+    "Images":    lambda: _open_path(os.path.expanduser("~/Pictures")),
+    "Music":     lambda: _open_path(os.path.expanduser("~/Music")),
+    "Gmail":     lambda: _open_url("https://mail.google.com"),
+    "Programs":  lambda: _open_path("/Applications" if sys.platform == "darwin" else "C:\\Program Files"),
+    "Wikipedia": lambda: _open_url("https://wikipedia.org"),
+}
+
+TOOL_ACTIONS = {
+    "Open Calculator": lambda: _run_app(["open", "-a", "Calculator"] if sys.platform == "darwin"
+                                         else ["calc"] if sys.platform == "win32" else ["gnome-calculator"]),
+    "Search the Web":  lambda: _open_url("https://google.com"),
+    "Open Notepad":    lambda: _run_app(["open", "-a", "TextEdit"] if sys.platform == "darwin"
+                                          else ["notepad"] if sys.platform == "win32" else ["gedit"]),
+    "Take a Screenshot": lambda: _run_app(["screencapture", "-i"] if sys.platform == "darwin"
+                                            else ["snippingtool"] if sys.platform == "win32"
+                                            else ["gnome-screenshot", "-a"]),
+}
+
+# ═══════════════════════════════════════════════════════════
+#  CHAT HISTORY
+# ═══════════════════════════════════════════════════════════
 def list_saved_chats():
-    files = sorted(
-        [f for f in os.listdir(HISTORY_DIR) if f.endswith(".json")],
-        reverse=True
-    )
-    return files
+    return sorted([f for f in os.listdir(HISTORY_DIR) if f.endswith(".json")], reverse=True)
 
 def load_chat(filename):
-    path = os.path.join(HISTORY_DIR, filename)
-    with open(path, "r") as f:
+    with open(os.path.join(HISTORY_DIR, filename)) as f:
         return json.load(f)
 
 def save_chat(messages, filename=None):
-    if not messages:
-        return None
+    if not messages: return None
     if not filename:
         filename = datetime.now().strftime("chat_%Y%m%d_%H%M%S.json")
-    path = os.path.join(HISTORY_DIR, filename)
-    with open(path, "w") as f:
+    with open(os.path.join(HISTORY_DIR, filename), "w") as f:
         json.dump(messages, f, indent=2)
     return filename
 
 def delete_chat(filename):
-    path = os.path.join(HISTORY_DIR, filename)
-    if os.path.exists(path):
-        os.remove(path)
+    p = os.path.join(HISTORY_DIR, filename)
+    if os.path.exists(p): os.remove(p)
 
-
-# ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 #  SYSTEM PROMPT
-# ─────────────────────────────────────────────────────────
-SYSTEM_PROMPT = (
-    "You are Jarvis, a highly intelligent AI assistant. "
-    "Be concise, confident, and slightly witty. Remember full conversation context. "
-    "ONLY if someone directly asks who made you or who created you, say Samarbir Singh — a real software developer who built you using Python, Ollama, and LLaMA. "
-    "You are NOT from the Marvel universe — only mention this if directly asked. "
-    "You have access to real-time news to answer questions about current events, upcoming releases, seasons, games, and anything requiring up-to-date information. "
-    "Do NOT say you lack real-time information — use the news context provided to answer directly and confidently. "
-    "Never mention your creator, your origin, or Marvel unprompted."
-)
+# ═══════════════════════════════════════════════════════════
+_PROMPT_CACHE = {"text": "", "ts": 0}
 
+def build_system_prompt():
+    import time
+    now_ts = time.time()
+    if now_ts - _PROMPT_CACHE["ts"] < 60 and _PROMPT_CACHE["text"]:
+        return _PROMPT_CACHE["text"]
+    now = datetime.now()
+    prompt = (
+        f"You are Jarvis, a highly intelligent AI assistant. "
+        f"Current date and time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}. "
+        f"Always use this when asked about the date or time. "
+        f"Be concise, confident, and slightly witty. Keep answers brief unless detail is needed. "
+        f"IMPORTANT: Always finish your sentences completely — never stop mid-sentence. "
+        f"You understand all modern slang, Gen-Z language, abbreviations, and informal speech naturally. "
+        f"Respond in a natural, conversational tone matching the user's style. "
+        f"ONLY if someone directly asks who made you, say Samarbir Singh — "
+        f"a real software developer who built you using Python, Ollama, and LLaMA. "
+        f"You are NOT from the Marvel universe — only mention if directly asked. "
+        f"You have access to real-time news for current events. "
+        f"Do NOT say you lack real-time information. "
+        f"Never mention your creator, origin, or Marvel unprompted."
+    )
+    _PROMPT_CACHE["text"] = prompt
+    _PROMPT_CACHE["ts"] = now_ts
+    return prompt
 
-# ─────────────────────────────────────────────────────────
-#  REAL-TIME NEWS & CONTEXT
-# ─────────────────────────────────────────────────────────
-
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/rss+xml, application/xml, text/xml, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
+# Slang / shortform normalizer — runs before sending to model
+_SLANG_MAP = {
+    # Gen-Z / internet slang
+    "fr":       "for real",
+    "fr fr":    "for real for real",
+    "ngl":      "not gonna lie",
+    "tbh":      "to be honest",
+    "imo":      "in my opinion",
+    "imho":     "in my humble opinion",
+    "rn":       "right now",
+    "idk":      "I don't know",
+    "idc":      "I don't care",
+    "iirc":     "if I recall correctly",
+    "afaik":    "as far as I know",
+    "lmk":      "let me know",
+    "hmu":      "hit me up",
+    "wya":      "where are you",
+    "wyd":      "what are you doing",
+    "wbu":      "what about you",
+    "wdym":     "what do you mean",
+    "istg":     "I swear to God",
+    "ong":      "on God, honestly",
+    "slay":     "excellent, impressive",
+    "no cap":   "no lie, seriously",
+    "cap":      "lie or exaggeration",
+    "lowkey":   "somewhat, quietly",
+    "highkey":  "very much, openly",
+    "bussin":   "really good",
+    "sus":      "suspicious",
+    "bet":      "okay, agreed",
+    "vibe":     "feeling or atmosphere",
+    "ghosted":  "suddenly ignored",
+    "salty":    "upset or bitter",
+    "goat":     "greatest of all time",
+    "hits different": "feels uniquely good",
+    "it's giving": "it seems like",
+    "understood the assignment": "did a great job",
+    "main character": "center of attention",
+    "rent free":  "constantly on my mind",
+    "based":    "admirable, bold",
+    "cringe":   "embarrassing",
+    "mid":      "mediocre",
+    "w":        "win",
+    "l":        "loss or failure",
+    "ratio":    "more dislikes than likes",
+    "simp":     "someone overly devoted",
+    "chad":     "confident impressive person",
+    "npc":      "boring or robotic person",
+    "touch grass": "go outside and take a break",
+    "rizz":     "charisma or charm",
+    "yeet":     "throw or discard",
+    "fomo":     "fear of missing out",
+    "smh":      "shaking my head",
+    "imo":      "in my opinion",
+    "omg":      "oh my god",
+    "omfg":     "oh my god",
+    "wtf":      "what the heck",
+    "lol":      "haha",
+    "lmao":     "haha that's funny",
+    "lmfao":    "haha that's hilarious",
+    "rofl":     "rolling on the floor laughing",
+    "brb":      "be right back",
+    "afk":      "away from keyboard",
+    "irl":      "in real life",
+    "dm":       "direct message",
+    "tbf":      "to be fair",
+    "fwiw":     "for what it's worth",
+    "tfw":      "that feeling when",
+    "mfw":      "my face when",
+    "eli5":     "explain like I'm five",
+    "ama":      "ask me anything",
+    "gg":       "good game, well done",
+    "gl":       "good luck",
+    "gm":       "good morning",
+    "gn":       "good night",
+    "ty":       "thank you",
+    "tysm":     "thank you so much",
+    "np":       "no problem",
+    "yw":       "you're welcome",
+    "pls":      "please",
+    "plz":      "please",
+    "rly":      "really",
+    "u":        "you",
+    "ur":       "your",
+    "r":        "are",
+    "y":        "why",
+    "b4":       "before",
+    "2":        "to",
+    "4":        "for",
+    "nvm":      "never mind",
+    "tbh":      "to be honest",
+    "ikr":      "I know right",
+    "ik":       "I know",
+    "k":        "okay",
+    "kk":       "okay okay",
+    "aight":    "alright",
+    "bout":     "about",
+    "gonna":    "going to",
+    "wanna":    "want to",
+    "gotta":    "got to",
+    "kinda":    "kind of",
+    "sorta":    "sort of",
+    "prolly":   "probably",
+    "def":      "definitely",
+    "obv":      "obviously",
+    "rn":       "right now",
+    "atm":      "at the moment",
+    "asap":     "as soon as possible",
+    "fyi":      "for your information",
+    "btw":      "by the way",
+    "iirc":     "if I recall correctly",
 }
 
+def normalize_slang(text):
+    """Replace known slang/shortforms with plain English before sending to model."""
+    result = text
+    for pattern, expansion in _SLANG_PATTERNS:
+        result = pattern.sub(expansion, result)
+    return result
+
+# Pre-compile all slang patterns once at import time — avoids recompiling on every message
+import re as _re_slang
+_SLANG_PATTERNS = [
+    (_re_slang.compile(r'(?<![a-zA-Z])' + _re_slang.escape(slang) + r'(?![a-zA-Z])', _re_slang.IGNORECASE), expansion)
+    for slang, expansion in sorted(_SLANG_MAP.items(), key=lambda x: -len(x[0]))
+]
+
+# ═══════════════════════════════════════════════════════════
+#  REAL-TIME NEWS
+# ═══════════════════════════════════════════════════════════
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+_HTTP_LOCAL = threading.local()
+
+def _http():
+    session = getattr(_HTTP_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(_HEADERS)
+        _HTTP_LOCAL.session = session
+    return session
 import xml.etree.ElementTree as ET
 import re as _re
+
+def _ollama_options(num_predict, num_ctx, for_voice=False):
+    if for_voice:
+        return {
+            "num_ctx":        num_ctx,
+            "num_predict":    num_predict,
+            "temperature":    0.4,       # lower = faster, more deterministic
+            "top_p":          1.0,       # disable top_p sampling (use top_k only)
+            "top_k":          20,        # tighter = faster token selection
+            "repeat_penalty": 1.05,
+            "num_thread":     0,
+            "num_gpu":        99,
+            "num_batch":      512,       # higher batch = faster prompt processing
+            "num_keep":       -1,
+        }
+    return {
+        "num_ctx":        num_ctx,
+        "num_predict":    num_predict,
+        "temperature":    TEMPERATURE,
+        "top_p":          TOP_P,
+        "top_k":          TOP_K,
+        "repeat_penalty": REPEAT_PENALTY,
+        "num_thread":     0,
+        "num_gpu":        99,
+        "num_batch":      512,
+        "num_keep":       -1,
+    }
+
+def _stream_ollama(prompt, max_tokens, ctx_size, on_token=None, for_voice=False):
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": True,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": _ollama_options(max_tokens, ctx_size, for_voice),
+    }
+    resp = _http().post(
+        "http://localhost:11434/api/generate",
+        json=payload,
+        timeout=OLLAMA_TIMEOUT,
+        stream=True,
+    )
+    resp.raise_for_status()
+
+    full = ""
+    done_reason = ""
+    eval_count = 0
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        chunk = json.loads(line)
+        text = chunk.get("response", "")
+        if text:
+            full += text
+            if on_token:
+                on_token(text)
+        if chunk.get("done"):
+            done_reason = chunk.get("done_reason", "")
+            eval_count = int(chunk.get("eval_count") or 0)
+            break
+    return full, done_reason, eval_count
+
+def _looks_cut_off(text, done_reason, eval_count, max_tokens):
+    # Primary signals from Ollama — most reliable
+    if done_reason in {"length", "num_predict"}:
+        return True
+    if eval_count and eval_count >= max_tokens - 8:
+        return True
+    # Fallback: response ends mid-word (last token is an incomplete word fragment).
+    # We only trigger this when the response is long enough that a cut-off is plausible
+    # AND the last character is a plain letter/digit — not any punctuation at all.
+    # This avoids false positives on responses ending with !, ?, —, ), ", etc.
+    stripped = text.strip()
+    if len(stripped) > 120:
+        last_char = stripped[-1]
+        if last_char.isalpha():
+            # Ends with a bare word — very likely cut off mid-sentence
+            return True
+    return False
 
 def _parse_rss(content, max_results=10):
     try:
         root = ET.fromstring(content)
         for elem in root.iter():
-            if "}" in elem.tag:
-                elem.tag = elem.tag.split("}", 1)[1]
+            if "}" in elem.tag: elem.tag = elem.tag.split("}", 1)[1]
         items = root.findall(".//item") or root.findall(".//entry")
-        results = []
+        out = []
         for item in items[:max_results]:
             title = (item.findtext("title") or "").strip()
-            title = title.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&#39;", "'").replace("&quot;", '"')
-            pubdate = (
-                item.findtext("pubDate") or
-                item.findtext("updated") or
-                item.findtext("published") or ""
-            ).strip()
-            desc = (item.findtext("description") or item.findtext("summary") or "").strip()
-            desc = _re.sub(r"<[^>]+>", "", desc)[:150]
-            if title:
-                results.append((title, pubdate[:22], desc))
-        return results
-    except Exception:
-        return []
+            title = title.replace("&amp;","&").replace("&lt;","<").replace("&gt;",">")
+            pubdate = (item.findtext("pubDate") or item.findtext("updated") or "").strip()
+            desc = _re.sub(r"<[^>]+>", "", (item.findtext("description") or "").strip())[:150]
+            if title: out.append((title, pubdate[:22], desc))
+        return out
+    except Exception: return []
 
-def fetch_google_news_rss(query, max_results=10):
-    """Fetch news from Google News RSS with better relevance filtering."""
-    encoded = urllib.parse.quote(query)
-    
-    # Try multiple strategies to get relevant results
-    urls = [
-        # India-specific
-        f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en",
-        # US general
-        f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en",
-        # With "latest" modifier
-        f"https://news.google.com/rss/search?q={encoded}+latest&hl=en-US&gl=US&ceid=US:en",
-    ]
-    
-    best_results = []
-    
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=_HEADERS, timeout=7)
-            if resp.status_code == 200 and resp.content:
-                items = _parse_rss(resp.content, max_results)
-                if items and len(items) > 0:
-                    # Filter out clearly irrelevant results
-                    filtered = []
-                    query_lower = query.lower()
-                    query_words = [w for w in query_lower.split() if len(w) > 2]
-                    
-                    for title, date, desc in items:
-                        title_lower = title.lower()
-                        # Accept if title contains key query terms (at least 1 word)
-                        if any(word in title_lower for word in query_words[:3]):
-                            filtered.append((title, date, desc))
-                    
-                    if filtered:
-                        best_results = filtered
-                        break  # Found good results, stop trying other URLs
-                    elif items:
-                        best_results = items[:max_results//2]  # Use partial results if no exact match
-                        
-        except Exception:
-            continue
-    
-    if best_results:
-        lines = [f"📰 REAL-TIME NEWS — '{query}' (fetched now):"]
-        for i, (title, date, desc) in enumerate(best_results, 1):
-            line = f"{i}. {title}"
-            if date:
-                line += f"  [{date}]"
-            if desc:
-                line += f"\n   → {desc}"
-            lines.append(line)
-        return "\n".join(lines)
-    
-    return ""
+def _build_news_query(user_text):
+    """Turn a casual user question into a focused news search query."""
+    import re as _re
+    t = user_text.strip().lower()
+    fillers = [r"\btell me\b", r"\bwhat is\b", r"\bwhat are\b",
+               r"\bgive me\b", r"\bshow me\b", r"\blatest\b",
+               r"\brecent\b", r"\bcurrent\b", r"\btoday\b",
+               r"\bnews about\b", r"\bnews on\b", r"\bnews\b",
+               r"\bupdate\b", r"\bupdates\b", r"\bhappening\b",
+               r"\babout\b", r"\bwith\b", r"\bthe\b",
+               r"\bfor\b", r"\bwhat\b", r"\bis\b",
+               r"\bare\b", r"\bme\b", r"\bgive\b",
+               r"\bshow\b", r"\btell\b", r"\bin\b",
+               r"\bon\b", r"\bany\b"]
+    for f in fillers:
+        t = _re.sub(f, " ", t)
+    t = " ".join(t.split()).strip()
+    if len(t.split()) <= 2 and t:
+        return f"{t} latest news"
+    return t if t else user_text.strip()
 
-def fetch_bing_news_rss(query, max_results=8):
-    """Fetch from Bing News RSS as fallback with relevance filtering."""
+# Map of country/region keywords → Google News geo RSS feeds
+# These return actual local headlines, not just articles mentioning the word
+_GEO_FEEDS = {
+    "india":         "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en",
+    "indian":        "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en",
+    "us":            "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+    "usa":           "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+    "america":       "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+    "american":      "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+    "uk":            "https://news.google.com/rss?hl=en-GB&gl=GB&ceid=GB:en",
+    "britain":       "https://news.google.com/rss?hl=en-GB&gl=GB&ceid=GB:en",
+    "pakistan":      "https://news.google.com/rss?hl=en-PK&gl=PK&ceid=PK:en",
+    "australia":     "https://news.google.com/rss?hl=en-AU&gl=AU&ceid=AU:en",
+    "canada":        "https://news.google.com/rss?hl=en-CA&gl=CA&ceid=CA:en",
+    "world":         "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en&topic=w",
+    "international": "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en&topic=w",
+}
+
+def _detect_geo_feed(user_text):
+    """Return a geo-specific RSS URL if the query is about a country, else None."""
+    t = user_text.strip().lower()
+    for keyword, url in _GEO_FEEDS.items():
+        if keyword in t.split() or f" {keyword} " in f" {t} ":
+            return url, keyword
+    return None, None
+
+def fetch_google_news_rss(query, max_results=8):
+    geo_url, geo_kw = _detect_geo_feed(query)
     try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://www.bing.com/news/search?q={encoded}&format=rss"
-        resp = requests.get(url, headers=_HEADERS, timeout=7)
-        if resp.status_code == 200 and resp.content:
-            items = _parse_rss(resp.content, max_results)
+        if geo_url:
+            # Use the geo feed — actual headlines from that country/region
+            r = _http().get(geo_url, headers=_HEADERS, timeout=5)
+            label = f"{geo_kw.upper()} NEWS"
+        else:
+            # Fall back to keyword search
+            search_q = _build_news_query(query)
+            encoded = urllib.parse.quote(search_q)
+            r = _http().get(
+                f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en",
+                headers=_HEADERS, timeout=5)
+            label = f"NEWS — '{search_q}'"
+        if r.status_code == 200:
+            items = _parse_rss(r.content, max_results)
             if items:
-                # Filter for relevance
-                query_lower = query.lower()
-                query_words = [w for w in query_lower.split() if len(w) > 2]
-                filtered = []
-                for title, date, desc in items:
-                    if any(word in title.lower() for word in query_words):
-                        filtered.append((title, date, desc))
-                
-                if filtered:
-                    lines = [f"📡 BING NEWS — '{query}':"]
-                    for i, (title, date, desc) in enumerate(filtered, 1):
-                        line = f"{i}. {title}"
-                        if date:
-                            line += f"  [{date}]"
-                        if desc:
-                            line += f"\n   → {desc}"
-                        lines.append(line)
-                    return "\n".join(lines)
-    except Exception:
-        pass
-    return ""
-
-def fetch_wikipedia_summary(query):
-    """Get Wikipedia summary if available."""
-    try:
-        # Clean query for Wikipedia - use first meaningful word
-        clean_query = query.split()[0] if query.split() else query
-        encoded = urllib.parse.quote(clean_query.replace(" ", "_"))
-        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
-        resp = requests.get(url, headers=_HEADERS, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            extract = data.get("extract", "")
-            title = data.get("title", "")
-            if extract and len(extract) > 80:
-                return f"📚 [Wikipedia — {title}]\n{extract[:600]}"
+                lines = [f"REAL-TIME {label}:"]
+                for n, (t, d, desc) in enumerate(items, 1):
+                    lines.append(f"{n}. {t}" + (f"  [{d}]" if d else ""))
+                return "\n".join(lines)
     except Exception:
         pass
     return ""
 
 def fetch_context(query):
-    """Fetch real-time news with strict relevance filtering and parallel execution."""
     results = {}
+    def _g(): results["g"] = fetch_google_news_rss(query)
+    t = threading.Thread(target=_g, daemon=True); t.start(); t.join(timeout=6)
+    return results.get("g", "")
 
-    def _google():
-        results["google"] = fetch_google_news_rss(query)
+def fetch_context_quick(query, wait=2.5):
+    """Fetch news with a shorter timeout — 2.5s is enough for most connections."""
+    results = {}
+    def _g(): results["g"] = fetch_google_news_rss(query)
+    t = threading.Thread(target=_g, daemon=True)
+    t.start()
+    t.join(timeout=wait)
+    return results.get("g", "")
 
-    def _bing():
-        results["bing"] = fetch_bing_news_rss(query)
-
-    def _wiki():
-        results["wiki"] = fetch_wikipedia_summary(query)
-
-    # Run all fetches in parallel with timeout
-    threads = [
-        threading.Thread(target=_google, daemon=True),
-        threading.Thread(target=_bing, daemon=True),
-        threading.Thread(target=_wiki, daemon=True),
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=6)
-
-    # Combine results (prefer Google, then Bing, then Wiki)
-    if results.get("google"):
-        return results["google"]
-    if results.get("bing"):
-        return results["bing"]
-    if results.get("wiki"):
-        return results["wiki"]
-    return ""
-
+def build_continuation_prompt(original_prompt, partial):
+    tail = partial.strip()[-900:]
+    return (
+        f"{build_system_prompt()}\n\n"
+        "Your previous response was cut off mid-word or mid-sentence by the token limit. "
+        "Complete ONLY the unfinished sentence. Do not add new sentences, do not summarize, "
+        "do not say anything beyond finishing the sentence that was cut off.\n\n"
+        f"User request:\n{original_prompt}\n\n"
+        f"Partial response (complete only the last unfinished sentence):\n{tail}"
+    )
 
 def needs_realtime(text):
     triggers = [
-        "will there be", "will it be", "will there", "is there going to be",
-        "is it going to be", "will we have", "will we see", "going to be",
-        "will it rain", "will it snow",
-        "second season", "season 2", "season 3", "new season", "next season",
-        "renewed", "cancelled", "canceled",
-        "upcoming games", "new games", "new releases", "release date",
-        "any new", "any upcoming", "ps5 games", "xbox games", "nintendo games",
-        "when is", "when will",
-        "latest on", "recently", "just released", "just announced", "new update",
-        "coming out", "come out", "out yet",
-        "news", "latest news", "what's happening", "what is happening",
-        "current events", "today in", "update on", "tell me about",
-        "what happened", "recent", "breaking",
+        "news", "latest", "today", "current", "recent", "happening", "update", "broke",
+        "who won", "result", "score", "election", "weather", "price", "stock",
+        "headline", "what's going on", "what is going on", "tell me about",
+        "what happened", "any updates", "new developments", "recently",
     ]
     return any(t in text.lower() for t in triggers)
 
+# ═══════════════════════════════════════════════════════════
+#  VOICE / TTS  —  Kokoro (bm_daniel) primary, Daniel Enhanced fallback
+# ═══════════════════════════════════════════════════════════
+KOKORO_MODEL  = os.path.expanduser("~/Desktop/kokoro-v0_19.onnx")
+KOKORO_VOICES = os.path.expanduser("~/Desktop/voices.bin")
+KOKORO_VOICE  = "bm_daniel"
+KOKORO_SPEED  = 0.85
+KOKORO_LANG   = "en-gb"
 
-# ─────────────────────────────────────────────────────────
-#  VOICE SYNTHESIS (Piper TTS)
-# ─────────────────────────────────────────────────────────
 def _cache_key(text):
     return os.path.join(VOICE_CACHE, hashlib.md5(text.encode()).hexdigest() + ".wav")
 
+_KOKORO_INSTANCE = None
+_KOKORO_LOCK = threading.Lock()
+
+def _get_kokoro():
+    global _KOKORO_INSTANCE
+    with _KOKORO_LOCK:
+        if _KOKORO_INSTANCE is None:
+            try:
+                from kokoro_onnx import Kokoro
+                if os.path.exists(KOKORO_MODEL) and os.path.exists(KOKORO_VOICES):
+                    _KOKORO_INSTANCE = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
+                    print("[TTS] Kokoro loaded — using bm_daniel voice")
+            except Exception as e:
+                print(f"[TTS] Kokoro load failed: {e}")
+        return _KOKORO_INSTANCE
+
 def speak_with_piper(text):
-    """Synthesize text to a WAV file using Piper TTS. Returns filepath or None."""
+    """Primary TTS — uses Kokoro bm_daniel, falls back to Daniel Enhanced."""
     cache_file = _cache_key(text)
     if os.path.exists(cache_file):
         return cache_file
+    # Try Kokoro first
     try:
-        import io
-        import piper
-        import wave
+        import soundfile as sf
+        kokoro = _get_kokoro()
+        if kokoro is not None:
+            samples, sr = kokoro.create(text, voice=KOKORO_VOICE, speed=KOKORO_SPEED, lang=KOKORO_LANG)
+            sf.write(cache_file, samples, sr)
+            return cache_file
+    except Exception as e:
+        print(f"[TTS] Kokoro error: {e} — falling back to system TTS")
+    # Fallback to Daniel Enhanced
+    return _speak_system_to_file(text)
 
-        if not os.path.exists(PIPER_VOICE_MODEL):
-            return None
+_KOKORO_PRELOAD_READY = False
+_KOKORO_PRELOAD_FLAG = multiprocessing.Value('b', 0)  # shared between processes
 
-        voice = piper.PiperVoice.load(PIPER_VOICE_MODEL)
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, "wb") as wf:
-            voice.synthesize_wav(text, wf)
-        wav_buffer.seek(0)
-        with open(cache_file, "wb") as f:
-            f.write(wav_buffer.getvalue())
-        return cache_file
-    except Exception:
-        return None
+def preload_piper_voice():
+    """Preload Kokoro and pre-synthesize the welcome message so it's instant."""
+    global _KOKORO_PRELOAD_READY
+    try:
+        _get_kokoro()
+        speak_with_piper("Ready.")
+        speak_with_piper(f"Welcome back, {USER_NAME}. All systems are online.")
+        print("[TTS] Kokoro preload complete — welcome message cached")
+    except Exception as e:
+        print(f"[TTS] Preload error: {e}")
+    finally:
+        _KOKORO_PRELOAD_READY = True
+        try:
+            _KOKORO_PRELOAD_FLAG.value = 1
+        except Exception:
+            pass
 
 def _speak_system_to_file(text):
-    """Fallback: synthesize via system TTS to a temp WAV file. Returns filepath or None."""
+    """System TTS fallback using Daniel (Enhanced) — deep British male, zero delay on macOS."""
     try:
         import tempfile
+        if sys.platform == "darwin":
+            # Preprocess text to sound more natural — less robotic
+            # Add SSML-style pauses and smooth out punctuation
+            import re as _re
+            t = text.strip()
+            # Expand common abbreviations that say mispronounces
+            t = _re.sub(r"\bAI\b", "A.I.", t)
+            t = _re.sub(r"\bOK\b", "okay", t, flags=_re.IGNORECASE)
+            # Add a tiny breath pause after commas and before conjunctions
+            t = t.replace(",", ", [[slnc 80]]")
+            t = t.replace(";", "; [[slnc 120]]")
+            # Soften sentence-ending punctuation into a natural pause
+            t = _re.sub(r'([.!?])\s*$', r'\1 [[slnc 100]]', t)
+            # say plays directly — no file write, starts immediately
+            subprocess.run(
+                ["say", "-v", "Daniel (Enhanced)", "-r", "150", t],
+                check=False, timeout=30
+            )
+            return "__spoken__"  # sentinel: audio already played inline
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         if sys.platform == "linux":
             subprocess.run(
-                ["espeak", "-v", "en-US", "-s", "150", "-w", tmp.name, text],
+                ["espeak-ng", "-v", "en-gb-x-gbclan+m3", "-s", "130", "-p", "20", "-w", tmp.name, text],
                 check=False, timeout=15
             )
-            return tmp.name
-        elif sys.platform == "darwin":
-            subprocess.run(
-                ["say", "-v", "Daniel", "-r", "150", "-o", tmp.name,
-                 "--data-format=LEF32@22050", text],
-                check=False, timeout=15
-            )
+            if not os.path.exists(tmp.name) or os.path.getsize(tmp.name) == 0:
+                subprocess.run(
+                    ["espeak", "-v", "en-gb+m3", "-s", "130", "-p", "20", "-w", tmp.name, text],
+                    check=False, timeout=15
+                )
             return tmp.name
         elif sys.platform == "win32":
-            import pyttsx3
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 150)
-            engine.say(text)
-            engine.runAndWait()
-            return None
-    except Exception:
-        return None
+            script = (
+                f'Add-Type -AssemblyName System.Speech;'
+                f'$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;'
+                f'$male=$s.GetInstalledVoices()|Where-Object{{$_.VoiceInfo.Gender -eq "Male"}}|Select-Object -First 1;'
+                f'if($male){{$s.SelectVoice($male.VoiceInfo.Name)}};'
+                f'$s.Rate=-2;'
+                f'$s.SetOutputToWaveFile("{tmp.name}");'
+                f'$s.Speak("{text.replace(chr(34), chr(39))}");'
+                f'$s.Dispose()'
+            )
+            subprocess.run(["powershell", "-Command", script], check=False, timeout=20)
+            return tmp.name
+    except Exception as e:
+        print(f"[TTS] System TTS error: {e}")
+    return None
 
 def _play_audio(filepath):
-    """Play audio file — blocks until playback is complete."""
     if not filepath or not os.path.exists(filepath):
+        if filepath == "__spoken__":
+            return  # already played inline by say, nothing to do
         return
     try:
         if sys.platform == "darwin":
             subprocess.run(["afplay", filepath], check=False, timeout=60)
         elif sys.platform == "linux":
-            subprocess.run(
-                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", filepath],
-                check=False, timeout=60
-            )
+            subprocess.run(["ffplay","-nodisp","-autoexit","-loglevel","quiet",filepath], check=False, timeout=60)
         elif sys.platform == "win32":
-            subprocess.run(
-                ["powershell", "-c",
-                 f"(New-Object Media.SoundPlayer '{filepath}').PlaySync()"],
-                check=False
-            )
+            subprocess.run(["powershell","-c",f"(New-Object Media.SoundPlayer '{filepath}').PlaySync()"], check=False)
+    except Exception: pass
+
+# ── Startup sound effects generated with numpy ──────────────────────────────
+def _write_wav(path, samples, sr=22050):
+    """Write float32 samples [-1,1] as 16-bit WAV."""
+    import struct, wave as _wave
+    pcm = (samples * 32767).astype("int16")
+    with _wave.open(path, "w") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+        wf.writeframes(pcm.tobytes())
+
+def _generate_boot_sounds():
+    """Pre-generate startup sound effect files if not already cached."""
+    try:
+        import numpy as np
+        sr = 22050
+        cache = os.path.join(VOICE_CACHE, "_boot_sounds")
+        os.makedirs(cache, exist_ok=True)
+
+        def _tone(freq, dur, shape="sine", fade=0.01):
+            t = np.linspace(0, dur, int(sr * dur), False)
+            if shape == "sine":
+                s = np.sin(2 * np.pi * freq * t)
+            elif shape == "square":
+                s = np.sign(np.sin(2 * np.pi * freq * t)) * 0.3
+            elif shape == "saw":
+                s = 2 * (t * freq - np.floor(t * freq + 0.5))
+            fade_s = int(sr * fade)
+            env = np.ones(len(t))
+            env[:fade_s] = np.linspace(0, 1, fade_s)
+            env[-fade_s:] = np.linspace(1, 0, fade_s)
+            return (s * env * 0.4).astype("float32")
+
+        def _noise(dur, filt=True):
+            t = np.linspace(0, dur, int(sr * dur), False)
+            s = np.random.uniform(-1, 1, len(t)).astype("float32")
+            # simple LP filter
+            if filt:
+                for i in range(1, len(s)):
+                    s[i] = 0.85 * s[i-1] + 0.15 * s[i]
+            fade_s = int(sr * 0.005)
+            s[:fade_s] *= np.linspace(0, 1, fade_s)
+            s[-fade_s:] *= np.linspace(1, 0, fade_s)
+            return s * 0.25
+
+        sounds = {}
+
+        # boot_tick — short high beep for each boot item completing
+        p = os.path.join(cache, "tick.wav")
+        if not os.path.exists(p):
+            s = np.concatenate([_tone(1800, 0.04), _tone(2200, 0.03)])
+            _write_wav(p, s)
+        sounds["tick"] = p
+
+        # boot_start — power-up sweep at very beginning
+        p = os.path.join(cache, "powerup.wav")
+        if not os.path.exists(p):
+            dur = 0.8
+            t = np.linspace(0, dur, int(sr * dur), False)
+            freq = np.linspace(120, 800, len(t))
+            s = np.sin(2 * np.pi * np.cumsum(freq) / sr).astype("float32")
+            env = np.linspace(0, 1, len(t)) ** 0.4
+            env[-int(sr * 0.1):] *= np.linspace(1, 0, int(sr * 0.1))
+            _write_wav(p, (s * env * 0.5).astype("float32"))
+        sounds["powerup"] = p
+
+        # scan — short noise burst for scanning
+        p = os.path.join(cache, "scan.wav")
+        if not os.path.exists(p):
+            s = np.concatenate([_noise(0.06), _tone(900, 0.05)])
+            _write_wav(p, s)
+        sounds["scan"] = p
+
+        # ready — final ascending chord, 2.5s with natural decay
+        p = os.path.join(cache, "ready.wav")
+        if not os.path.exists(p):  # delete this file manually if you want to regenerate
+            total = int(sr * 2.5)
+            s = np.zeros(total, dtype="float32")
+            for freq, start, vol in [(440, 0.0, 0.35), (554, 0.18, 0.30), (659, 0.36, 0.28), (880, 0.54, 0.25), (1108, 0.72, 0.20)]:
+                dur = 1.8
+                t2 = np.linspace(0, dur, int(sr * dur), False)
+                tone = np.sin(2 * np.pi * freq * t2).astype("float32")
+                # Natural exponential decay
+                decay = np.exp(-t2 * 2.5).astype("float32")
+                tone = tone * decay
+                si = int(sr * start)
+                end = min(total, si + len(tone))
+                s[si:end] += tone[:end - si] * vol
+            # Final fade out last 0.5s
+            fade_len = int(sr * 0.5)
+            s[-fade_len:] *= np.linspace(1, 0, fade_len)
+            _write_wav(p, np.clip(s, -1, 1))
+        sounds["ready"] = p
+
+        # select — UI click for mode selection
+        p = os.path.join(cache, "select.wav")
+        if not os.path.exists(p):
+            s = np.concatenate([_tone(1200, 0.03, "square"), _tone(1800, 0.05)])
+            _write_wav(p, s)
+        sounds["select"] = p
+
+        return sounds
     except Exception:
-        pass
+        return {}
 
+_BOOT_SOUNDS = {}
 
-# ─────────────────────────────────────────────────────────
-#  MODEL WARMUP WORKER
-# ─────────────────────────────────────────────────────────
+def _init_boot_sounds():
+    global _BOOT_SOUNDS
+    _BOOT_SOUNDS = _generate_boot_sounds()
+
+def _play_sound(name):
+    path = _BOOT_SOUNDS.get(name)
+    if path:
+        threading.Thread(target=_play_audio, args=(path,), daemon=True).start()
+
+# ═══════════════════════════════════════════════════════════
+#  WORKERS
+# ═══════════════════════════════════════════════════════════
 class ModelWarmupWorker(QThread):
     warmup_complete = pyqtSignal()
-
     def run(self):
         if not MODEL_WARMUP_ENABLED:
-            self.warmup_complete.emit()
-            return
-
-        def _ollama_warmup():
-            try:
-                warmup_prompt = f"{SYSTEM_PROMPT}\n\nUser: Hello\nJarvis:"
-                resp = requests.post(
-                    "http://localhost:11434/api/generate",
-                    json={
-                        "model": "llama3.2:3b",
-                        "prompt": warmup_prompt,
-                        "stream": True,
-                        "options": {"num_predict": 20}
-                    },
-                    timeout=60,
-                    stream=True
-                )
-                for line in resp.iter_lines():
-                    if line:
-                        chunk = json.loads(line)
-                        if chunk.get("done"):
-                            break
-            except Exception:
-                pass
-
-        def _connection_warmup():
-            try:
-                requests.get("http://localhost:11434/api/tags", timeout=5)
-            except Exception:
-                pass
-
-        t1 = threading.Thread(target=_ollama_warmup, daemon=True)
-        t2 = threading.Thread(target=_connection_warmup, daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join(timeout=5)
+            self.warmup_complete.emit(); return
+        try:
+            warmup_prompt = f"{build_system_prompt()}\n\nUser: Hi\nJarvis:"
+            # CRITICAL: options must be byte-for-byte identical to _ollama_options()
+            # Any difference forces Ollama to tear down and rebuild the KV cache,
+            # making the first real message just as slow as a cold start.
+            resp = _http().post("http://localhost:11434/api/generate",
+                json={"model": OLLAMA_MODEL,
+                      "prompt": warmup_prompt,
+                      "stream": True,
+                      "keep_alive": OLLAMA_KEEP_ALIVE,
+                      "options": {
+                          "num_ctx":        CTX_SIZE_SMALL,
+                          "num_predict":    20,
+                          "temperature":    0.4,
+                          "top_p":          1.0,
+                          "top_k":          20,
+                          "repeat_penalty": REPEAT_PENALTY,
+                          "num_thread":     0,
+                          "num_gpu":        99,
+                          "num_batch":      512,
+                          "num_keep":       -1,
+                      }},
+                timeout=90, stream=True)
+            for line in resp.iter_lines():
+                if line:
+                    data = json.loads(line)
+                    if data.get("done"):
+                        break
+        except Exception:
+            pass
         self.warmup_complete.emit()
 
+def _is_casual(text):
+    """Detect short conversational inputs that need very few output tokens."""
+    t = text.strip().lower()
+    if len(t) <= 20:
+        return True
+    casual_starters = [
+        "hi", "hello", "hey", "yo", "sup", "ohh", "oh", "ah", "hmm",
+        "haha", "lol", "lmao", "lmfao", "rofl", "ok", "okay", "k", "kk",
+        "sure", "thanks", "thank you", "ty", "tysm", "np", "yw",
+        "great", "nice", "cool", "awesome", "got it", "sounds good",
+        "bye", "goodbye", "see you", "good morning", "good night", "gm", "gn",
+        "how are you", "what's up", "wassup", "wyd", "wbu",
+        "bet", "aight", "fr", "gg", "based", "slay",
+    ]
+    return any(t == c or t.startswith(c + " ") or t.startswith(c + "!") or t.startswith(c + ",")
+               for c in casual_starters)
 
-# ─────────────────────────────────────────────────────────
-#  JARVIS WORKER
-# ─────────────────────────────────────────────────────────
 class JarvisWorker(QThread):
     token_received = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, prompt, history, use_news=False):
+    finished       = pyqtSignal(str)
+    error          = pyqtSignal(str)
+    def __init__(self, prompt, history, use_news=False, is_first=False, model_ready=False):
         super().__init__()
         self.prompt = prompt
         self.history = history
         self.use_news = use_news
+        self.is_first = is_first
+        self.model_ready = model_ready
 
     def run(self):
-        if not self.use_news:
-            self._run_llm(self.prompt)
-            return
+        # Start news fetch in background immediately — build prompt in parallel
+        news_result = {}
+        news_thread = None
+        if self.use_news:
+            def _fetch(): news_result["ctx"] = fetch_google_news_rss(self.prompt)
+            news_thread = threading.Thread(target=_fetch, daemon=True)
+            news_thread.start()
 
-        topic = self.prompt
-        for phrase in ["will there be", "will it be", "will there", "is there going to be",
-                       "is it going to be", "will we have", "will we see", "going to be",
-                       "second season", "new season", "next season", "release date",
-                       "any new", "any upcoming", "when is", "when will", "coming out",
-                       "will it rain", "will it snow", "out yet", "just released",
-                       "just announced", "latest on", "season 2", "season 3",
-                       "renewed", "cancelled", "canceled"]:
-            topic = topic.replace(phrase, "").strip()
-
-        context_holder = {}
-        def _fetch():
-            context_holder["ctx"] = fetch_context(topic)
-
-        news_thread = threading.Thread(target=_fetch, daemon=True)
-        news_thread.start()
-        news_thread.join(timeout=5)
-
-        context = context_holder.get("ctx", "")
-        if context:
-            augmented_prompt = (
-                f"REAL-TIME DATA (fetched right now):\n{context}\n\n"
-                f"Question: {self.prompt}\n\n"
-                f"Answer based on the data provided. Be concise and direct."
-            )
+        # Build prompt while news is fetching.
+        # - First message: no history (matches warmup prompt → fastest cold start).
+        # - Casual message: last 4 lines only (2 exchanges) — enough context to
+        #   remember the ongoing topic without bloating the prompt and adding delay.
+        # - Normal message: last 10 lines for full context.
+        if self.is_first:
+            trimmed = []
+        elif _is_casual(self.prompt):
+            trimmed = self.history[:-1][-4:]
         else:
-            augmented_prompt = self.prompt
+            trimmed = self.history[:-1][-10:]
+        history_text = "\n".join(trimmed)
 
-        self._run_llm(augmented_prompt)
+        # Wait for news — up to 2.5s, but prompt building already used some of that
+        if news_thread:
+            news_thread.join(timeout=2.5)
+        ctx = news_result.get("ctx", "")
 
-    def _run_llm(self, augmented_prompt):
-        history_text = "\n".join(self.history[:-1])
-        full_prompt = f"{SYSTEM_PROMPT}\n\n{history_text}\nUser: {augmented_prompt}\nJarvis:"
+        aug = self.prompt
+        if ctx:
+            aug = (f"REAL-TIME DATA (use this, do not use training data for current events):\n{ctx}"
+                   f"\n\nUser question: {self.prompt}\n\nAnswer using the real-time data above.")
+
+        # Normalize slang/shortforms so the model understands immediately
+        aug = normalize_slang(aug)
+        full_prompt = f"{build_system_prompt()}\n\n{history_text}\nUser: {aug}\nJarvis:"
+
+        # Always use CTX_SIZE_SMALL for first message — must match warmup ctx
+        # so Ollama doesn't reload the model.  Subsequent messages scale up
+        # based on prompt length (history is now always included).
+        if self.is_first:
+            ctx_size = CTX_SIZE_SMALL
+        else:
+            ctx_size = CTX_SIZE_SMALL if len(full_prompt) < 2000 else CTX_SIZE_LARGE
+
+        # Casual/short messages only need a few output tokens — large num_predict
+        # increases Ollama's TTFT significantly even for one-word replies.
+        if _is_casual(self.prompt):
+            num_predict = 80
+        else:
+            num_predict = MAX_TOKENS_TEXT
+
         try:
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={"model": "llama3.2:3b", "prompt": full_prompt, "stream": True},
-                timeout=120,
-                stream=True
+            full, done_reason, eval_count = _stream_ollama(
+                full_prompt,
+                num_predict,
+                ctx_size,
+                self.token_received.emit,
             )
-            full_response = ""
-            for line in response.iter_lines():
-                if line:
-                    chunk = json.loads(line)
-                    text = chunk.get("response", "")
-                    if text:
-                        self.token_received.emit(text)
-                        full_response += text
-                    if chunk.get("done"):
-                        break
-            self.finished.emit(full_response.strip())
+
+            # Only continue if genuinely cut off mid-sentence
+            if _looks_cut_off(full, done_reason, eval_count, num_predict):
+                cont_prompt = build_continuation_prompt(self.prompt, full)
+                extra, _, _ = _stream_ollama(
+                    cont_prompt,
+                    768,
+                    CTX_SIZE_SMALL,
+                    self.token_received.emit,
+                )
+                full += extra
+
+            final = full.strip()
+            if final:
+                self.finished.emit(final)
+            else:
+                self.error.emit("Empty response from model")
+
         except Exception as e:
             self.error.emit(str(e))
 
-
-# ─────────────────────────────────────────────────────────
-#  VOICE WORKER
-# ─────────────────────────────────────────────────────────
 class VoiceWorker(QThread):
     text_received = pyqtSignal(str)
-    error = pyqtSignal(str)
+    error         = pyqtSignal(str)
+    level_update  = pyqtSignal(int)
+
+    RATE = 16000
 
     def __init__(self):
         super().__init__()
-        self._stop_event = threading.Event()
+        self._stop = threading.Event()
         self._frames = []
-        self.SAMPLE_RATE = 16000
 
     def stop_recording(self):
-        self._stop_event.set()
+        self._stop.set()
+
+    def _recognize(self, audio_bytes):
+        import speech_recognition as sr
+        rec = sr.Recognizer()
+        rec.dynamic_energy_threshold = True
+        aud = sr.AudioData(audio_bytes, self.RATE, 2)
+        for lang in ("en-IN", "en-US", "en-GB"):
+            try:
+                return rec.recognize_google(aud, language=lang)
+            except sr.UnknownValueError:
+                continue
+        raise sr.UnknownValueError()
 
     def run(self):
-        try:
-            import sounddevice as sd
-            import speech_recognition as sr
-            import numpy as np
-            import io
-            import wave
+        import speech_recognition as sr
+        import sounddevice as sd
+        import numpy as np
+        import wave
+        import tempfile
+        import time
 
-            self._frames = []
-            self._stop_event.clear()
+        self._frames = []
+        self._stop.clear()
+        heard_speech = False
+        last_loud = None
+        start = time.time()
+        silence_thresh = 120
+        silence_secs = 0.55
+        max_secs = 7
+        min_secs = 0.25
 
-            def callback(indata, frames, time, status):
-                if not self._stop_event.is_set():
-                    self._frames.append(indata.copy())
-
-            with sd.InputStream(samplerate=self.SAMPLE_RATE, channels=1, dtype='int16', callback=callback):
-                self._stop_event.wait(timeout=30)
-
-            if not self._frames:
-                self.error.emit("No audio recorded.")
+        def cb(indata, frames, time_info, status):
+            if self._stop.is_set():
                 return
+            chunk = indata.copy()
+            self._frames.append(chunk)
+            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+            self.level_update.emit(min(100, int(rms / 40)))
+            nonlocal heard_speech, last_loud, silence_thresh
+            if rms > silence_thresh:
+                heard_speech = True
+                last_loud = time.time()
+            elif len(self._frames) == 8:
+                silence_thresh = max(80, int(rms * 2.5))
 
-            audio_data = np.concatenate(self._frames, axis=0)
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, 'wb') as wf:
+        try:
+            device_info = sd.query_devices(kind="input")
+            device = device_info["index"] if device_info else None
+        except Exception:
+            device = None
+
+        try:
+            with sd.InputStream(
+                samplerate=self.RATE,
+                channels=1,
+                dtype="int16",
+                callback=cb,
+                device=device,
+                blocksize=1024,
+            ):
+                while not self._stop.is_set():
+                    elapsed = time.time() - start
+                    if elapsed > max_secs:
+                        break
+                    if (
+                        heard_speech
+                        and last_loud
+                        and elapsed > min_secs
+                        and time.time() - last_loud > silence_secs
+                    ):
+                        break
+                    time.sleep(0.05)
+        except Exception as e:
+            msg = str(e).lower()
+            if "permission" in msg or "denied" in msg or "not authorized" in msg:
+                self.error.emit(
+                    "Microphone access denied. Enable it in "
+                    "System Settings → Privacy & Security → Microphone."
+                )
+            else:
+                self.error.emit(f"Microphone error: {e}")
+            return
+
+        if not self._frames:
+            self.error.emit("No audio recorded. Check your microphone and try again.")
+            return
+
+        audio = np.concatenate(self._frames, axis=0)
+        if len(audio) < self.RATE * 0.35:
+            self.error.emit("Speech too short. Speak clearly, then pause.")
+            return
+
+        wav_path = None
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            wav_path = tmp.name
+            tmp.close()
+            with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
-                wf.setframerate(self.SAMPLE_RATE)
-                wf.writeframes(audio_data.tobytes())
-            wav_buffer.seek(0)
+                wf.setframerate(self.RATE)
+                wf.writeframes(audio.tobytes())
 
-            recognizer = sr.Recognizer()
-            with sr.AudioFile(wav_buffer) as source:
-                audio = recognizer.record(source)
-            text = recognizer.recognize_google(audio)
-            self.text_received.emit(text)
-
-        except ImportError as e:
-            self.error.emit(f"Missing library: {e}")
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-# ─────────────────────────────────────────────────────────
-#  ADVANCED PARTICLE SYSTEM
-# ─────────────────────────────────────────────────────────
-class HolographicParticle:
-    def __init__(self, x, y, width, height):
-        import random
-        self.x = random.uniform(x, x + width)
-        self.y = random.uniform(y, y + height)
-        self.vx = random.uniform(-0.5, 0.5)
-        self.vy = random.uniform(-0.8, -0.2)
-        self.life = 1.0
-        self.decay = random.uniform(0.008, 0.025)
-        self.size = random.uniform(0.5, 2.0)
-        self.hue = random.uniform(180, 210)
-        self.rotation = random.uniform(0, 360)
-        self.spin = random.uniform(-3, 3)
-
-    def update(self):
-        self.x += self.vx
-        self.y += self.vy
-        self.life = max(0, self.life - self.decay)
-        self.vy -= 0.08
-        self.vx *= 0.99
-        self.rotation += self.spin
-
-    def is_alive(self):
-        return self.life > 0.01
-
-
-class AdvancedParticleSystem:
-    def __init__(self, count=PARTICLE_COUNT):
-        self.particles = []
-        self.spawn_count = count
-
-    def update(self, scene_rect):
-        for p in self.particles:
-            if p.is_alive():
-                p.update()
-
-        alive_count = len([p for p in self.particles if p.is_alive()])
-        while alive_count < self.spawn_count:
-            import random
-            x = random.uniform(scene_rect.x(), scene_rect.x() + scene_rect.width())
-            y = scene_rect.y() + scene_rect.height()
-            self.particles.append(HolographicParticle(x, y, 0, 0))
-            alive_count += 1
-
-    def draw(self, painter):
-        for p in self.particles:
-            if p.is_alive():
-                alpha = int(255 * p.life)
-                color = QColor.fromHsv(int(p.hue), 200, int(200 + 55 * p.life), alpha)
-                painter.setBrush(QBrush(color))
-                painter.setPen(Qt.PenStyle.NoPen)
-
-                painter.save()
-                painter.translate(p.x, p.y)
-                painter.rotate(p.rotation)
-                painter.drawEllipse(-p.size/2, -p.size/2, p.size, p.size)
-                painter.restore()
-
-
-# ───────────────────────────────────────────────��─────────
-#  HOLOGRAPHIC BACKGROUND
-# ─────────────────────────────────────────────────────────
-class HolographicBackground(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._offset = 0
-        self._pulse_time = 0
-        self._glitch_offset = 0
-        self.particle_system = AdvancedParticleSystem(PARTICLE_COUNT)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._animate)
-        self.timer.start(1000 // ANIMATION_FPS)
-
-    def _animate(self):
-        self._offset = (self._offset + 2) % 60
-        self._pulse_time = (self._pulse_time + 1) % 360
-        self._glitch_offset = (self._glitch_offset + 1) % 100
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        self.particle_system.update(self.rect())
-        self.particle_system.draw(painter)
-
-        pen = QPen(QColor(0, 212, 255, 10), 0.5)
-        painter.setPen(pen)
-        step = 40
-        x = self._offset % step
-        while x < self.width():
-            alpha_val = int(10 + 6 * math.sin(math.radians(self._pulse_time + x/2)))
-            pen.setColor(QColor(0, 212, 255, max(3, alpha_val)))
-            painter.setPen(pen)
-            painter.drawLine(int(x), 0, int(x), self.height())
-            x += step
-
-        y = self._offset % step
-        while y < self.height():
-            alpha_val = int(10 + 6 * math.sin(math.radians(self._pulse_time + y/2)))
-            pen.setColor(QColor(0, 212, 255, max(3, alpha_val)))
-            painter.setPen(pen)
-            painter.drawLine(0, int(y), self.width(), int(y))
-            y += step
-
-        scanline_pen = QPen(QColor(0, 0, 0, 12), 1)
-        painter.setPen(scanline_pen)
-        for y in range(0, self.height(), 2):
-            flicker = 12 if (self._glitch_offset + y) % 20 < 10 else 5
-            scanline_pen.setColor(QColor(0, 0, 0, flicker))
-            painter.setPen(scanline_pen)
-            painter.drawLine(0, y, self.width(), y)
-
-
-# ─────────────────────────────────────────────────────────
-#  ANIMATED ARC REACTOR
-# ─────────────────────────────────────────────────────────
-class AnimatedArcReactor(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(240, 240)
-        self._angle = 0
-        self._pulse = 0
-        self._state = "idle"
-        self._data_streams = [0, 0, 0]
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._animate)
-        self.timer.start(1000 // ANIMATION_FPS)
-
-    def set_state(self, state):
-        self._state = state
-
-    def _animate(self):
-        self._angle = (self._angle + 2.5) % 360
-        self._pulse = (self._pulse + 3) % 360
-        for i in range(len(self._data_streams)):
-            self._data_streams[i] = (self._data_streams[i] + (i+1)*1.5) % 360
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
-
-        cx = self.width() / 2
-        cy = self.height() / 2
-        r = min(cx, cy) - 15
-
-        if self._state == "listening":
-            core_color = QColor(0, 255, 136)
-            ring_color = QColor(0, 255, 136)
-        elif self._state == "responding":
-            core_color = QColor(0, 180, 255)
-            ring_color = QColor(0, 180, 255)
-        else:
-            core_color = QColor(0, 212, 255)
-            ring_color = QColor(0, 212, 255)
-
-        for i in range(3):
-            glow_pen = QPen(QColor(ring_color.red(), ring_color.green(), ring_color.blue(), 40), 2)
-            painter.setPen(glow_pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            offset = i * 90 + self._angle * (1 + i * 0.15)
-            r_offset = r - i * 15
-            painter.drawArc(
-                int(cx - r_offset), int(cy - r_offset),
-                int(r_offset * 2), int(r_offset * 2),
-                int(offset * 16), int(100 * 16)
-            )
-
-            ring_pen = QPen(ring_color, 1.5)
-            painter.setPen(ring_pen)
-            painter.drawArc(
-                int(cx - r_offset), int(cy - r_offset),
-                int(r_offset * 2), int(r_offset * 2),
-                int(offset * 16), int(100 * 16)
-            )
-
-        pulse_scale = 0.6 + 0.4 * math.sin(math.radians(self._pulse))
-        inner_r = r * 0.32 * pulse_scale
-
-        grad = QRadialGradient(int(cx), int(cy), int(inner_r * 2.5))
-        grad.setColorAt(0, QColor(core_color.red(), core_color.green(), core_color.blue(), 130))
-        grad.setColorAt(0.5, QColor(core_color.red(), core_color.green(), core_color.blue(), 40))
-        grad.setColorAt(1, QColor(core_color.red(), core_color.green(), core_color.blue(), 0))
-        painter.setBrush(QBrush(grad))
-        painter.setPen(QPen(core_color, 1.5))
-        painter.drawEllipse(QPointF(cx, cy), inner_r, inner_r)
-
-        painter.setBrush(QBrush(core_color))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(cx, cy), 4, 4)
-
-
-# ─────────────────────────────────────────────────────────
-#  TYPING INDICATOR
-# ─────────────────────────────────────────────────────────
-class TypingIndicator(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(38)
-        self._dots = [0.3, 0.3, 0.3]
-        self._step = 0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._animate)
-        self.hide()
-
-    def start(self):
-        self.show()
-        self.timer.start(150)
-
-    def stop(self):
-        self.timer.stop()
-        self.hide()
-
-    def _animate(self):
-        self._step = (self._step + 1) % 3
-        for i in range(3):
-            self._dots[i] = 1.0 if i == self._step else 0.3
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = 5
-        gap = 18
-        x = 28
-        y = self.height() // 2
-        for i, alpha in enumerate(self._dots):
-            glow_color = QColor(0, 212, 255, int(80 * alpha))
-            painter.setBrush(QBrush(glow_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(QPointF(x, y), r * alpha + 2.5, r * alpha + 2.5)
-
-            color = QColor(0, 212, 255, int(220 * alpha))
-            painter.setBrush(QBrush(color))
-            painter.drawEllipse(QPointF(x, y), r * alpha, r * alpha)
-            x += r * 2 + gap
-
-
-# ─────────────────────────────────────────────────────────
-#  HOLOGRAPHIC CHAT BUBBLE
-# ─────────────────────────────────────────────────────────
-class HolographicBubble(QFrame):
-    def __init__(self, text, is_user=True, parent=None):
-        super().__init__(parent)
-        self.is_user = is_user
-        self._full_text = text
-        self._build(text)
-
-    def _build(self, text):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(2, 2, 2, 2)
-        outer.setSpacing(2)
-
-        meta_row = QHBoxLayout()
-        meta_row.setContentsMargins(12, 0, 12, 0)
-        ts = datetime.now().strftime("%H:%M")
-        ts_label = QLabel(ts)
-        ts_label.setFont(QFont("Courier New", 8))
-        ts_label.setStyleSheet("color: rgba(0,212,255,90);")
-
-        copy_btn = QPushButton("⎘")
-        copy_btn.setFixedSize(22, 18)
-        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: rgba(0,212,255,110);
-                border: none;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover { color: #00D4FF; }
-        """)
-        copy_btn.clicked.connect(self._copy_text)
-
-        if self.is_user:
-            meta_row.addStretch()
-            meta_row.addWidget(copy_btn)
-            meta_row.addWidget(ts_label)
-        else:
-            meta_row.addWidget(ts_label)
-            meta_row.addWidget(copy_btn)
-            meta_row.addStretch()
-        outer.addLayout(meta_row)
-
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-
-        self.label = QLabel(text)
-        self.label.setWordWrap(True)
-        self.label.setFont(QFont("Courier New", 11))
-        self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.label.setMaximumWidth(650)
-
-        if self.is_user:
-            self.label.setStyleSheet("""
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 100, 220, 90),
-                    stop:1 rgba(0, 40, 150, 130));
-                color: #FFFFFF;
-                border: 2px solid rgba(0, 212, 255, 210);
-                border-radius: 20px;
-                padding: 12px 18px;
-            """)
-            row.addStretch()
-            row.addWidget(self.label)
-        else:
-            self.label.setStyleSheet("""
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 20, 60, 160),
-                    stop:1 rgba(0, 40, 100, 120));
-                color: #00D4FF;
-                border: 2px solid rgba(0, 212, 255, 160);
-                border-radius: 20px;
-                padding: 12px 18px;
-            """)
-            row.addWidget(self.label)
-            row.addStretch()
-        outer.addLayout(row)
-
-    def append_text(self, text):
-        self._full_text += text
-        self.label.setText(self._full_text)
-
-    def _copy_text(self):
-        QApplication.clipboard().setText(self._full_text)
-
-
-# ─────────────────────────────────────────────────────────
-#  COLLAPSIBLE HISTORY PANEL
-# ─────────────────────────────────────────────────────────
-class CollapsibleHistoryPanel(QWidget):
-    chat_selected = pyqtSignal(str)
-    chat_deleted = pyqtSignal(str)
-    new_chat = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._collapsed = False
-        self._all_items = []
-        self._build()
-
-    def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self.toggle_btn = QPushButton("◀ SESSIONS")
-        self.toggle_btn.setFixedHeight(42)
-        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 212, 255, 50),
-                    stop:1 rgba(0, 150, 255, 30));
-                color: #00D4FF;
-                border: 2px solid rgba(0, 212, 255, 180);
-                border-radius: 8px;
-                font-family: 'Courier New';
-                font-size: 12px;
-                font-weight: bold;
-                letter-spacing: 2px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 212, 255, 80),
-                    stop:1 rgba(0, 150, 255, 60));
-                border-color: #00D4FF;
-            }
-        """)
-        self.toggle_btn.clicked.connect(self._toggle)
-        layout.addWidget(self.toggle_btn)
-
-        self.content_panel = QWidget()
-        content_layout = QVBoxLayout(self.content_panel)
-        content_layout.setContentsMargins(10, 10, 10, 10)
-        content_layout.setSpacing(8)
-
-        title = QLabel("SESSIONS")
-        title.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        title.setStyleSheet("color: rgba(0,212,255,180); letter-spacing: 2px;")
-        content_layout.addWidget(title)
-
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("SEARCH...")
-        self.search.setFixedHeight(30)
-        self.search.setFont(QFont("Courier New", 9))
-        self.search.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(0,212,255,12);
-                color: #00D4FF;
-                border: 1px solid rgba(0,212,255,80);
-                border-radius: 5px;
-                padding: 0 8px;
-                font-weight: bold;
-            }
-            QLineEdit:focus { border-color: rgba(0,212,255,180); background-color: rgba(0,212,255,20); }
-        """)
-        self.search.textChanged.connect(self._filter)
-        content_layout.addWidget(self.search)
-
-        self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet("""
-            QListWidget {
-                background-color: rgba(0, 10, 30, 140);
-                border: 1px solid rgba(0, 212, 255, 50);
-                border-radius: 5px;
-                outline: none;
-            }
-            QListWidget::item {
-                color: rgba(0,212,255,170);
-                font-family: 'Courier New';
-                font-size: 10px;
-                padding: 6px 8px;
-                border-radius: 3px;
-                margin: 1px;
-                border: 1px solid transparent;
-            }
-            QListWidget::item:selected {
-                background-color: rgba(0,212,255,35);
-                color: #00D4FF;
-                border: 1px solid rgba(0,212,255,120);
-            }
-            QListWidget::item:hover {
-                background-color: rgba(0,212,255,15);
-                border: 1px solid rgba(0,212,255,60);
-            }
-        """)
-        self.list_widget.itemClicked.connect(self._on_select)
-        content_layout.addWidget(self.list_widget)
-
-        new_btn = QPushButton("＋ NEW")
-        new_btn.setFixedHeight(32)
-        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        new_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(0, 212, 255, 25);
-                color: #00D4FF;
-                border: 1px solid rgba(0, 212, 255, 100);
-                border-radius: 5px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: rgba(0, 212, 255, 50); border-color: #00D4FF; }
-        """)
-        new_btn.clicked.connect(self.new_chat.emit)
-        content_layout.addWidget(new_btn)
-
-        del_btn = QPushButton("⌫ DELETE")
-        del_btn.setFixedHeight(32)
-        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        del_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 59, 48, 20);
-                color: #FF6B6B;
-                border: 1px solid rgba(255, 59, 48, 80);
-                border-radius: 5px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: rgba(255, 59, 48, 40); color: #FF3B30; border-color: #FF3B30; }
-        """)
-        del_btn.clicked.connect(self._on_delete)
-        content_layout.addWidget(del_btn)
-
-        self.content_panel.setStyleSheet("""
-            background-color: rgba(0, 15, 40, 180);
-            border: 1px solid rgba(0, 212, 255, 80);
-            border-radius: 8px;
-        """)
-        self.content_panel.setMaximumWidth(220)
-        self.content_panel.hide()
-
-        layout.addWidget(self.content_panel)
-        layout.addStretch()
-
-    def _toggle(self):
-        self._collapsed = not self._collapsed
-        if self._collapsed:
-            self.toggle_btn.setText("▶ SESSIONS")
-            self.content_panel.hide()
-        else:
-            self.toggle_btn.setText("◀ SESSIONS")
-            self.content_panel.show()
-
-    def refresh(self):
-        self.list_widget.clear()
-        self._all_items = []
-        for fname in list_saved_chats():
             try:
-                ts = fname.replace("chat_", "").replace(".json", "")
-                dt = datetime.strptime(ts, "%Y%m%d_%H%M%S")
-                label = dt.strftime("%b %d  %H:%M")
-            except Exception:
-                label = fname
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, fname)
-            self._all_items.append((label.lower(), item))
-            self.list_widget.addItem(item)
+                text = self._recognize(audio.tobytes())
+            except sr.UnknownValueError:
+                with sr.AudioFile(wav_path) as src:
+                    rec = sr.Recognizer()
+                    aud = rec.record(src)
+                text = None
+                for lang in ("en-IN", "en-US", "en-GB"):
+                    try:
+                        text = rec.recognize_google(aud, language=lang)
+                        break
+                    except sr.UnknownValueError:
+                        continue
+                if not text:
+                    raise sr.UnknownValueError()
 
-    def _filter(self, text):
-        self.list_widget.clear()
-        for label, item in self._all_items:
-            if text.lower() in label:
-                self.list_widget.addItem(item)
+            text = text.strip()
+            if not text:
+                self.error.emit("Could not understand speech. Try again.")
+                return
+            self.text_received.emit(text)
+        except ImportError as e:
+            self.error.emit(f"Missing library: {e}. Run: pip install sounddevice SpeechRecognition numpy")
+        except sr.UnknownValueError:
+            self.error.emit("Could not understand speech. Speak louder and try again.")
+        except sr.RequestError as e:
+            self.error.emit(f"Speech recognition unavailable (need internet): {e}")
+        except Exception as e:
+            self.error.emit(f"Voice error: {e}")
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
 
-    def _on_select(self, item):
-        fname = item.data(Qt.ItemDataRole.UserRole)
-        self.chat_selected.emit(fname)
-
-    def _on_delete(self):
-        item = self.list_widget.currentItem()
-        if item:
-            fname = item.data(Qt.ItemDataRole.UserRole)
-            self.chat_deleted.emit(fname)
-
-
-# ─────────────────────────────────────────────────────────
-#  TTS WORKER (pipelined synthesis + playback)
-# ─────────────────────────────────────────────────────────
 class TTSWorker(QThread):
-    """
-    Two-stage pipeline:
-      Stage 1 (synth_thread)  — pulls text from sentence_queue, synthesizes to WAV file,
-                                pushes filepath into _audio_queue
-      Stage 2 (this thread)   — pulls filepaths from _audio_queue, plays them back-to-back
-    """
     finished_speaking = pyqtSignal()
-
-    def __init__(self, sentence_queue, stop_event):
+    def __init__(self, sentence_queue, stop_event, mute_event):
         super().__init__()
-        self.sentence_queue = sentence_queue
-        self.stop_event = stop_event
-        self._audio_queue = queue.Queue()
+        self.sq = sentence_queue
+        self.stop = stop_event
+        self.mute = mute_event
 
     def run(self):
-        def synthesizer():
-            while not self.stop_event.is_set():
+        import time as _time
+        # synth thread collects sentences from _sq, synthesizes them, puts audio
+        # paths into _aq.  A sentinel None in _aq means "no more audio coming".
+        # Crucially: DONE is only put into _aq AFTER the last speak_with_piper()
+        # call returns — so the playback loop always sees audio before the sentinel.
+        self._aq = queue.Queue()
+
+        def synth():
+            while not self.stop.is_set():
                 try:
-                    sentence = self.sentence_queue.get(timeout=0.2)
-                    if sentence is None:
-                        self._audio_queue.put(None)
-                        break
-                    path = speak_with_piper(sentence)
-                    if not path:
-                        path = _speak_system_to_file(sentence)
-                    if path:
-                        self._audio_queue.put(path)
+                    s = self.sq.get(timeout=0.2)
                 except queue.Empty:
                     continue
-
-        synth_thread = threading.Thread(target=synthesizer, daemon=True)
-        synth_thread.start()
-
-        while not self.stop_event.is_set():
-            try:
-                path = self._audio_queue.get(timeout=0.3)
-                if path is None:
+                if s is None:
+                    self._aq.put(None)
                     break
-                _play_audio(path)
-            except queue.Empty:
-                continue
+                if self.mute.is_set():
+                    continue
+                print(f"[TTS] Synthesizing: {s[:60]}...")
+                path = speak_with_piper(s)
+                if path and not self.stop.is_set():
+                    print(f"[TTS] Audio ready: {path}")
+                    self._aq.put(path)
+                else:
+                    print(f"[TTS] No audio produced for: {s[:60]}")
+            if self.stop.is_set():
+                self._aq.put(None)
 
-        synth_thread.join(timeout=5)
+        st = threading.Thread(target=synth, daemon=True)
+        st.start()
+
+        last_play_end = _time.time()
+        while not self.stop.is_set():
+            try:
+                p = self._aq.get(timeout=0.5)
+            except queue.Empty:
+                # Synth thread died without putting sentinel — bail out
+                if not st.is_alive():
+                    break
+                continue
+            if p is None:
+                # Drain any remaining audio paths that were queued before sentinel
+                while True:
+                    try:
+                        p2 = self._aq.get_nowait()
+                        if p2 is None:
+                            break
+                        if not self.mute.is_set():
+                            _play_audio(p2)
+                            last_play_end = _time.time()
+                    except queue.Empty:
+                        break
+                break
+            if not self.mute.is_set():
+                _play_audio(p)
+                last_play_end = _time.time()
+
+        st.join(timeout=5)
+        # Brief tail silence so mic doesn't open while room echo is still present.
+        elapsed = _time.time() - last_play_end
+        tail_silence = 0.2
+        if elapsed < tail_silence:
+            _time.sleep(tail_silence - elapsed)
         self.finished_speaking.emit()
 
-
-# ─────────────────────────────────────────────────────────
-#  STREAMING LLM WORKER FOR VOICE
-# ─────────────────────────────────────────────────────────
 class VoiceLLMWorker(QThread):
     sentence_ready = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-
+    finished       = pyqtSignal(str)
+    error          = pyqtSignal(str)
     def __init__(self, prompt, history, use_news=False):
         super().__init__()
         self.prompt = prompt
@@ -1142,698 +1203,3595 @@ class VoiceLLMWorker(QThread):
 
     def run(self):
         import re
-        context = ""
+        ctx = ""
+        # Fire news fetch in background — only use if it finishes before LLM starts (very short wait)
         if self.use_news:
-            topic = self.prompt
-            for phrase in ["will there be", "will it be", "second season", "new season",
-                          "release date", "any new", "when is", "when will", "coming out"]:
-                topic = topic.replace(phrase, "").strip()
-            ctx_holder = {}
-            def _fetch():
-                ctx_holder["c"] = fetch_context(topic)
-            t = threading.Thread(target=_fetch, daemon=True)
-            t.start()
-            t.join(timeout=5)
-            context = ctx_holder.get("c", "")
+            ctx = fetch_context_quick(self.prompt, wait=0.10)
+        aug = (f"REAL-TIME DATA:\n{ctx}\n\nQuestion: {self.prompt}" if ctx else self.prompt)
+        aug = normalize_slang(aug)
 
-        if context:
-            augmented = f"REAL-TIME DATA:\n{context}\n\nQuestion: {self.prompt}\n\nAnswer now:"
-        else:
-            augmented = self.prompt
+        # Very short history for voice = minimal latency
+        trimmed_h = self.history[:-1][-4:]
+        history_text = "\n".join(trimmed_h)
 
-        history_text = "\n".join(self.history[:-1])
-        full_prompt = f"{SYSTEM_PROMPT}\n\n{history_text}\nUser: {augmented}\nJarvis:"
+        # Short system prompt for voice — full prompt adds ~400 tokens of TTFT overhead
+        now = datetime.now()
+        voice_system = (
+            f"You are Jarvis, a witty AI assistant. "
+            f"Date/time: {now.strftime('%A %B %d %Y %I:%M %p')}. "
+            f"Reply in 1-2 SHORT sentences. Be direct and conversational. Never mention Marvel."
+        )
+        full_prompt = f"{voice_system}\n\n{history_text}\nUser: {aug}\nJarvis:"
+
+        # Always use CTX_SIZE_SMALL for voice — must match warmup to keep KV cache hot
+        ctx_size = CTX_SIZE_SMALL
 
         try:
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json={"model": "llama3.2:3b", "prompt": full_prompt, "stream": True},
-                timeout=120,
-                stream=True
+            full = ""
+            buf = ""
+
+            # Sentence boundary pattern — split on strong boundaries
+            SENT_SPLIT = re.compile(r'(?<=[.!?])\s+(?=[A-Z])')
+
+            def on_token(text):
+                nonlocal full, buf
+                full += text
+                buf += text
+
+                # Split on complete sentences (ends with . ! ? followed by space + capital)
+                parts = SENT_SPLIT.split(buf)
+                for s in parts[:-1]:
+                    s = s.strip()
+                    if s:
+                        self.sentence_ready.emit(s)
+                buf = parts[-1]
+
+                # Only do soft-flush on long buffers — prevents splitting short replies
+                # like "Hello, need help with something" at the comma
+                if len(buf) >= 120:
+                    soft = max(buf.rfind(", "), buf.rfind("; "), buf.rfind(": "))
+                    if soft >= 60:
+                        s = buf[:soft + 1].strip()
+                        if s:
+                            self.sentence_ready.emit(s)
+                        buf = buf[soft + 2:].lstrip()
+
+            _, done_reason, eval_count = _stream_ollama(
+                full_prompt,
+                MAX_TOKENS_VOICE,
+                ctx_size,
+                on_token,
+                for_voice=True,
             )
-            full_response = ""
-            buffer = ""
-            for line in response.iter_lines():
-                if line:
-                    chunk = json.loads(line)
-                    text = chunk.get("response", "")
-                    if text:
-                        full_response += text
-                        buffer += text
-                        sentences = re.split(r'(?<=[.!?])\s+', buffer)
-                        for s in sentences[:-1]:
-                            s = s.strip()
-                            if s:
-                                self.sentence_ready.emit(s)
-                        buffer = sentences[-1]
-                    if chunk.get("done"):
-                        break
-            if buffer.strip():
-                self.sentence_ready.emit(buffer.strip())
-            self.finished.emit(full_response.strip())
+
+            if _looks_cut_off(full, done_reason, eval_count, MAX_TOKENS_VOICE):
+                cont_prompt = build_continuation_prompt(self.prompt, full)
+                _, _, _ = _stream_ollama(
+                    cont_prompt,
+                    512,
+                    ctx_size,
+                    on_token,
+                    for_voice=True,
+                )
+
+            # Flush anything remaining in the buffer BEFORE signalling done
+            if buf.strip():
+                self.sentence_ready.emit(buf.strip())
+                import time as _t; _t.sleep(0.01)  # yield so _on_sentence puts text in _sq before None
+            self.finished.emit(full.strip())
+
         except Exception as e:
             self.error.emit(str(e))
 
+# ═══════════════════════════════════════════════════════════
+#  MASSIVE ARC REACTOR — IRON MAN STYLE v5.0
+# ═══════════════════════════════════════════════════════════
+class ArcReactor(QWidget):
+    def __init__(self, size=400, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(size, size)
+        self.setFixedSize(size, size)
+        self._size = size
+        self._angle1 = 0.0
+        self._angle2 = 0.0
+        self._angle3 = 0.0
+        self._angle4 = 0.0
+        self._angle5 = 0.0
+        self._pulse = 0.0
+        self._scan = 0.0
+        self._wave = 0.0
+        self._breath = 0.0
+        self._state = "idle"
+        self._energy = 0.3
+        self._tilt_x = 0.0
+        self._tilt_y = 0.0
+        self._hover = False
+        self._particles = []
+        self._init_particles()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.start(1000 // ANIMATION_FPS)
+        self.setMouseTracking(True)
 
-# ─────────────────────────────────────────────────────────
-#  VOICE CHAT OVERLAY
-# ─────────────────────────────────────────────────────────
-class VoiceChatOverlay(QWidget):
-    transcript_ready = pyqtSignal(str, str)
+    def _init_particles(self):
+        self._particles = []
+        for _ in range(30):
+            self._particles.append({
+                "angle": random.uniform(0, 360),
+                "radius": random.uniform(0.1, 0.9),
+                "speed": random.uniform(0.2, 1.5),
+                "size": random.uniform(1, 3),
+                "alpha": random.uniform(0.3, 1.0),
+                "decay": random.uniform(0.001, 0.005),
+            })
+
+    def set_state(self, state):
+        self._state = state
+
+    def _step(self):
+        speeds = {
+            "idle":       (0.2, -0.15, 0.4, -0.3, 0.6, 1.0, 0.3),
+            "listening":  (0.8, -0.6, 1.2, -0.8, 1.5, 2.5, 0.8),
+            "processing": (1.5, -1.2, 2.0, -1.5, 2.5, 3.5, 1.0),
+            "speaking":   (1.0, -0.8, 1.5, -1.0, 1.8, 2.5, 0.6),
+        }
+        s1, s2, s3, s4, s5, sp, se = speeds.get(self._state, speeds["idle"])
+        self._angle1 = (self._angle1 + s1) % 360
+        self._angle2 = (self._angle2 + s2) % 360
+        self._angle3 = (self._angle3 + s3) % 360
+        self._angle4 = (self._angle4 + s4) % 360
+        self._angle5 = (self._angle5 + s5) % 360
+        self._pulse = (self._pulse + sp) % 360
+        self._scan = (self._scan + 0.8) % 360
+        self._wave = (self._wave + 0.5) % 360
+        self._breath = (self._breath + 0.03) % (2 * math.pi)
+        if self._state in ("listening", "processing", "speaking"):
+            self._energy = min(1.0, self._energy + 0.02)
+        else:
+            self._energy = max(0.3, self._energy - 0.01)
+        self._tilt_x *= 0.95
+        self._tilt_y *= 0.95
+        for p in self._particles:
+            p["angle"] = (p["angle"] + p["speed"]) % 360
+            p["alpha"] = max(0, p["alpha"] - p["decay"])
+            if p["alpha"] <= 0:
+                p["angle"] = random.uniform(0, 360)
+                p["radius"] = random.uniform(0.1, 0.9)
+                p["alpha"] = random.uniform(0.5, 1.0)
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        cx, cy = self.width() / 2, self.height() / 2
+        dx = (event.position().x() - cx) / cx
+        dy = (event.position().y() - cy) / cy
+        self._tilt_x = dy * 15
+        self._tilt_y = -dx * 15
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        R = min(cx, cy) - 10
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.translate(cx, cy)
+        p.rotate(self._tilt_x * 0.3)
+        p.scale(1 + abs(self._tilt_y) * 0.002, 1 + abs(self._tilt_x) * 0.002)
+        p.translate(-cx, -cy)
+        state_col = (C_GREEN if self._state == "listening" else
+                     QColor(0, 160, 255) if self._state == "responding" else C_CYAN)
+        outer_glow = QRadialGradient(cx, cy, R * 1.4)
+        outer_glow.setColorAt(0, QColor(0, 212, 255, int(30 * self._energy)))
+        outer_glow.setColorAt(0.5, QColor(0, 150, 200, int(15 * self._energy)))
+        outer_glow.setColorAt(1, QColor(0, 0, 0, 0))
+        p.setBrush(QBrush(outer_glow))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), R * 1.4, R * 1.4)
+        bg = QRadialGradient(cx, cy, R)
+        bg.setColorAt(0, QColor(0, 15, 35, 240))
+        bg.setColorAt(0.6, QColor(0, 8, 22, 220))
+        bg.setColorAt(0.85, QColor(0, 5, 15, 200))
+        bg.setColorAt(1, QColor(0, 2, 8, 180))
+        p.setBrush(QBrush(bg))
+        p.drawEllipse(QPointF(cx, cy), R, R)
+        p.setPen(QPen(QColor(15, 30, 45, 240), R * 0.10))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), R * 0.95, R * 0.95)
+        self._draw_ring_segments(p, cx, cy, R * 0.92, self._angle1, 32, QColor(0, 180, 220, 140), R * 0.08, 3.5, True)
+        self._draw_ring_dots(p, cx, cy, R * 0.80, self._angle2, 24, QColor(0, 200, 255, 180))
+        self._draw_ring_bars(p, cx, cy, R * 0.68, self._angle3, 16, QColor(0, 220, 255, 160))
+        self._draw_ring_arcs(p, cx, cy, R * 0.55, self._angle4, 12, QColor(0, 229, 255, 200))
+        self._draw_ring_segments(p, cx, cy, R * 0.42, self._angle5, 8, QColor(0, 240, 255, 220), R * 0.04, 2.0, False)
+        self._draw_chevrons(p, cx, cy, R * 0.75, self._angle1, 20)
+        self._draw_ticks(p, cx, cy, R * 0.88, 48, self._angle1)
+        self._draw_ticks(p, cx, cy, R * 0.72, 32, self._angle2)
+        self._draw_scan_sweep(p, cx, cy, R * 0.9)
+        self._draw_energy_wave(p, cx, cy, R)
+        self._draw_particles(p, cx, cy, R)
+        self._draw_core(p, cx, cy, R * 0.30)
+        pulse_s = 0.72 + 0.28 * math.sin(math.radians(self._pulse))
+        core_r = max(4, R * 0.035 * pulse_s)
+        p.setBrush(QBrush(QColor(255, 255, 255, 255)))
+        p.setPen(QPen(state_col, 2))
+        p.drawEllipse(QPointF(cx, cy), core_r, core_r)
+        if self._hover:
+            hover_glow = QRadialGradient(cx, cy, R * 0.5)
+            hover_glow.setColorAt(0, QColor(0, 212, 255, 20))
+            hover_glow.setColorAt(1, QColor(0, 0, 0, 0))
+            p.setBrush(QBrush(hover_glow))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx, cy), R * 0.5, R * 0.5)
+
+    def _draw_ring_segments(self, p, cx, cy, radius, angle, segments, color, width, has_gaps, _unused=None):
+        seg_angle = 360 / segments
+        gap = seg_angle * 0.25 if has_gaps else 1.5
+        for i in range(segments):
+            a_start = i * seg_angle + angle
+            a_span = seg_angle - gap
+            phase = ((i * seg_angle + angle) % 360) / 360
+            alpha = int(color.alpha() * (0.4 + 0.6 * abs(math.sin(math.pi * phase + self._breath))))
+            col = QColor(color.red(), color.green(), color.blue(), alpha)
+            pen = QPen(col, width)
+            pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(cx - radius, cy - radius, radius * 2, radius * 2), int(a_start * 16), int(a_span * 16))
+
+    def _draw_ring_dots(self, p, cx, cy, radius, angle, count, color):
+        for i in range(count):
+            a = math.radians(i * (360 / count) + angle)
+            phase = ((i * (360 / count) + angle) % 360) / 360
+            alpha = int(color.alpha() * (0.5 + 0.5 * math.sin(math.pi * phase * 2)))
+            dot_r = 2 + 2 * math.sin(math.pi * phase + self._breath * 2)
+            col = QColor(color.red(), color.green(), color.blue(), alpha)
+            p.setBrush(QBrush(col))
+            p.setPen(Qt.PenStyle.NoPen)
+            x = cx + math.cos(a) * radius
+            y = cy + math.sin(a) * radius
+            p.drawEllipse(QPointF(x, y), dot_r, dot_r)
+
+    def _draw_ring_bars(self, p, cx, cy, radius, angle, count, color):
+        for i in range(count):
+            a = math.radians(i * (360 / count) + angle)
+            bar_len = 8 + 6 * math.sin(math.radians(self._pulse + i * 20))
+            x1 = cx + math.cos(a) * (radius - bar_len/2)
+            y1 = cy + math.sin(a) * (radius - bar_len/2)
+            x2 = cx + math.cos(a) * (radius + bar_len/2)
+            y2 = cy + math.sin(a) * (radius + bar_len/2)
+            phase = ((i * (360 / count) + angle) % 360) / 360
+            alpha = int(color.alpha() * (0.4 + 0.6 * abs(math.sin(math.pi * phase))))
+            pen = QPen(QColor(color.red(), color.green(), color.blue(), alpha), 2.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+    def _draw_ring_arcs(self, p, cx, cy, radius, angle, count, color):
+        for i in range(count):
+            a_start = i * (360 / count) + angle
+            a_span = 12
+            phase = ((i * (360 / count) + angle) % 360) / 360
+            alpha = int(color.alpha() * (0.6 + 0.4 * math.sin(math.pi * phase * 2 + self._breath)))
+            pen = QPen(QColor(color.red(), color.green(), color.blue(), alpha), 3)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(cx - radius, cy - radius, radius * 2, radius * 2), int(a_start * 16), int(a_span * 16))
+
+    def _draw_chevrons(self, p, cx, cy, radius, angle, count):
+        for i in range(count):
+            a_start = i * (360 / count) + angle
+            a_span = 8
+            bright = (i % 3 == 0)
+            alpha = 220 if bright else 70
+            pen = QPen(QColor(200, 235, 255, alpha), 1.5 if bright else 0.8)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(cx - radius, cy - radius, radius * 2, radius * 2), int(a_start * 16), int(a_span * 16))
+
+    def _draw_ticks(self, p, cx, cy, radius, count, angle):
+        for i in range(count):
+            a = math.radians(i * (360 / count) + angle * 0.15)
+            ca, sa = math.cos(a), math.sin(a)
+            is_major = (i % 4 == 0)
+            r0 = radius - (self._size * 0.065 if is_major else self._size * 0.032)
+            r1 = radius
+            pen = QPen(QColor(0, 200, 255, 160 if is_major else 50), 1.3 if is_major else 0.6)
+            p.setPen(pen)
+            p.drawLine(QPointF(cx + ca * r0, cy + sa * r0), QPointF(cx + ca * r1, cy + sa * r1))
+
+    def _draw_scan_sweep(self, p, cx, cy, radius):
+        a = math.radians(self._scan)
+        pen = QPen(QColor(0, 229, 255, 80), 2)
+        p.setPen(pen)
+        x2 = cx + math.cos(a) * radius
+        y2 = cy + math.sin(a) * radius
+        p.drawLine(QPointF(cx, cy), QPointF(x2, y2))
+        p.setBrush(QBrush(QColor(0, 229, 255, 60)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(x2, y2), 8, 8)
+        for trail in range(3):
+            ta = a - math.radians((trail + 1) * 5)
+            talpha = 40 - trail * 12
+            tpen = QPen(QColor(0, 229, 255, talpha), 1)
+            p.setPen(tpen)
+            tx2 = cx + math.cos(ta) * radius * 0.9
+            ty2 = cy + math.sin(ta) * radius * 0.9
+            p.drawLine(QPointF(cx, cy), QPointF(tx2, ty2))
+
+    def _draw_energy_wave(self, p, cx, cy, max_r):
+        wave_r = (math.sin(math.radians(self._wave)) * 0.5 + 0.5) * max_r * 0.85
+        alpha = int(100 * (1 - wave_r / (max_r * 0.85)) * self._energy)
+        if alpha > 5:
+            p.setPen(QPen(QColor(0, 229, 255, alpha), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), wave_r, wave_r)
+
+    def _draw_particles(self, p, cx, cy, max_r):
+        for pt in self._particles:
+            a = math.radians(pt["angle"])
+            r = pt["radius"] * max_r
+            x = cx + math.cos(a) * r
+            y = cy + math.sin(a) * r
+            alpha = int(200 * pt["alpha"] * self._energy)
+            size = pt["size"] * (0.5 + 0.5 * self._energy)
+            p.setBrush(QBrush(QColor(0, 212, 255, alpha)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(x, y), size, size)
+
+    def _draw_core(self, p, cx, cy, radius):
+        pulse_s = 0.6 + 0.4 * math.sin(math.radians(self._pulse))
+        intensity = self._energy
+        for i, (r_mult, alpha_mult) in enumerate([(2.0, 0.08), (1.5, 0.15), (1.2, 0.3), (1.0, 0.5), (0.7, 0.8)]):
+            cg = QRadialGradient(cx, cy, radius * r_mult)
+            cg.setColorAt(0, QColor(220, 245, 255, int(255 * alpha_mult * intensity)))
+            cg.setColorAt(0.2, QColor(0, 229, 255, int(200 * alpha_mult * intensity)))
+            cg.setColorAt(0.5, QColor(0, 180, 255, int(100 * alpha_mult * intensity)))
+            cg.setColorAt(0.8, QColor(0, 100, 200, int(40 * alpha_mult * intensity)))
+            cg.setColorAt(1, QColor(0, 0, 0, 0))
+            p.setBrush(QBrush(cg))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx, cy), radius * r_mult * pulse_s, radius * r_mult * pulse_s)
+        inner_r = radius * 0.4 * pulse_s
+        inner_g = QRadialGradient(cx, cy, inner_r)
+        inner_g.setColorAt(0, QColor(255, 255, 255, int(250 * intensity)))
+        inner_g.setColorAt(0.5, QColor(0, 229, 255, int(200 * intensity)))
+        inner_g.setColorAt(1, QColor(0, 150, 255, 0))
+        p.setBrush(QBrush(inner_g))
+        p.drawEllipse(QPointF(cx, cy), inner_r, inner_r)
+
+    def mousePressEvent(self, event):
+        for p in self._particles:
+            p["alpha"] = 1.0
+            p["angle"] = random.uniform(0, 360)
+            p["radius"] = random.uniform(0.1, 0.5)
+        self.update()
+
+# ═══════════════════════════════════════════════════════════
+#  HUD PANEL STYLES & WIDGETS
+# ═══════════════════════════════════════════════════════════
+PANEL_STYLE = """
+QFrame {
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 rgba(4,14,32,220), stop:1 rgba(2,8,22,200));
+    border: 1px solid rgba(0,150,200,70);
+    border-top: 1px solid rgba(0,212,255,100);
+    border-radius: 6px;
+}
+"""
+
+def section_header(text, icon="◈"):
+    f = QFrame()
+    f.setStyleSheet("QFrame{background:transparent;border:none;border-bottom:1px solid rgba(0,150,200,60);padding-bottom:2px;}")
+    lay = QHBoxLayout(f); lay.setContentsMargins(0,0,0,4); lay.setSpacing(6)
+    dot = QLabel(icon); dot.setFont(_mono(8, True))
+    dot.setStyleSheet("color:rgba(0,212,255,180);background:transparent;border:none;")
+    lbl = QLabel(text); lbl.setFont(_mono(8, True))
+    lbl.setStyleSheet("color:rgba(0,212,255,200);background:transparent;border:none;")
+    lay.addWidget(dot); lay.addWidget(lbl); lay.addStretch()
+    return f
+
+def stat_row(label_text, value_text, val_color="#00D4FF"):
+    w = QWidget(); w.setStyleSheet("background:transparent;")
+    lay = QHBoxLayout(w); lay.setContentsMargins(0,1,0,1); lay.setSpacing(0)
+    lbl = QLabel(label_text); lbl.setFont(_mono(8))
+    lbl.setStyleSheet("color:rgba(0,170,200,160);background:transparent;border:none;")
+    bar = QFrame(); bar.setFixedHeight(2)
+    bar.setStyleSheet("background:rgba(0,180,220,40);border:none;")
+    if isinstance(value_text, QLabel):
+        val = value_text
+    else:
+        val = QLabel(str(value_text)); val.setFont(_mono(8, True))
+        val.setStyleSheet(f"color:{val_color};background:transparent;border:none;")
+    lay.addWidget(lbl); lay.addWidget(bar, 1); lay.addWidget(val)
+    return w
+
+class CircularGauge(QWidget):
+    def __init__(self, value=75, label="", size=80, parent=None):
+        super().__init__(parent)
+        self._value = value
+        self._label = label
+        self._size = size
+        self._angle = 0.0
+        self.setFixedSize(size, size)
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(50)
+
+    def set_value(self, v):
+        self._value = max(0, min(100, v))
+        self.update()
+
+    def _step(self):
+        self._angle = (self._angle + 2.5) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        R = min(cx, cy) - 4
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(0, 40, 70, 100), 6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), R, R)
+        pen = QPen(C_CYAN, 4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(int(cx - R), int(cy - R), int(R * 2), int(R * 2), int(90 * 16), int(-self._value / 100 * 360 * 16))
+        glow_pen = QPen(QColor(0, 212, 255, 60), 8)
+        p.setPen(glow_pen)
+        p.drawArc(int(cx - R), int(cy - R), int(R * 2), int(R * 2), int(90 * 16), int(-self._value / 100 * 360 * 16))
+        p.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
+        p.setPen(QPen(C_CYAN))
+        txt = f"{int(self._value)}%"
+        tw = p.fontMetrics().horizontalAdvance(txt)
+        p.drawText(int(cx - tw / 2), int(cy + 5), txt)
+        if self._label:
+            p.setFont(_mono(6))
+            p.setPen(QPen(QColor(0, 150, 200, 130)))
+            lines = self._label.split('\n')
+            for i, line in enumerate(lines):
+                lw = p.fontMetrics().horizontalAdvance(line)
+                p.drawText(int(cx - lw / 2), int(cy + 20 + i * 12), line)
+
+class VerticalBarMeter(QWidget):
+    def __init__(self, value=75, parent=None):
+        super().__init__(parent)
+        self._value = max(0, min(100, value))
+        self.setFixedWidth(18)
+
+    def set_value(self, v):
+        self._value = max(0, min(100, v))
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        segs = 20
+        seg_h = (h - 2) // segs - 1
+        filled = int(segs * self._value / 100)
+        for i in range(segs):
+            is_filled = (segs - 1 - i) < filled
+            ratio = (segs - 1 - i) / segs
+            if is_filled:
+                col = QColor(0, int(150 + 80 * ratio), int(200 + 55 * ratio), 180)
+            else:
+                col = QColor(0, int(40 + 30 * ratio), int(60 + 40 * ratio), 50)
+            p.setBrush(QBrush(col))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(1, 1 + i * (seg_h + 1), w - 2, seg_h)
+
+class WaveformDisplay(QWidget):
+    def __init__(self, parent=None, height=60):
+        super().__init__(parent)
+        self._t = 0.0
+        self._active = False
+        self.setMinimumHeight(height)
+        self.setFixedHeight(height)
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(50)
+
+    def set_active(self, v):
+        self._active = v
+
+    def _step(self):
+        self._t = (self._t + (0.15 if self._active else 0.04)) % (math.pi * 200)
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(0, 8, 20, 160))
+        p.setPen(QPen(QColor(0, 100, 150, 30), 0.5))
+        p.drawLine(0, h // 2, w, h // 2)
+        p.setPen(QPen(QColor(0, 212, 255, 160 if self._active else 80), 1.5))
+        n = 100
+        pts = []
+        for i in range(n):
+            fx = i / (n - 1)
+            if self._active:
+                amp = (0.5 + 0.3 * math.sin(fx * 12 + self._t * 3)) * (0.7 + 0.3 * math.sin(fx * 8 - self._t * 2))
+                fy = 0.5 + amp * 0.4 * math.sin(fx * 20 + self._t * 4)
+            else:
+                fy = 0.5 + 0.1 * math.sin(fx * 6 + self._t)
+            pts.append(QPointF(fx * w, fy * h))
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+        p.setPen(QPen(QColor(0, 212, 255, 40), 3))
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+
+class Equalizer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._bars = [random.uniform(0.1, 0.9) for _ in range(24)]
+        self._targets = [random.uniform(0.1, 0.9) for _ in range(24)]
+        self._active = False
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(80)
+
+    def set_active(self, v):
+        self._active = v
+
+    def _step(self):
+        for i in range(24):
+            if self._active:
+                if random.random() < 0.3:
+                    self._targets[i] = random.uniform(0.2, 1.0)
+            else:
+                self._targets[i] = random.uniform(0.05, 0.25)
+            diff = self._targets[i] - self._bars[i]
+            self._bars[i] += diff * 0.25
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(0, 8, 20, 160))
+        p.setPen(QPen(QColor(0, 150, 200, 60), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(0, 0, w - 1, h - 1)
+        n = len(self._bars)
+        bar_w = (w - 40) / n
+        freqs = ["20", "40", "80", "160", "320", "640", "1.2K", "2.5K", "5K", "10K", "20K"]
+        for i, val in enumerate(self._bars):
+            bh = int(val * (h - 24))
+            bx = int(20 + i * bar_w) + 1
+            by = h - 14 - bh
+            ratio = val
+            col = QColor(0, int(180 + 60 * ratio), int(220 + 35 * ratio), int(100 + 130 * ratio))
+            p.setBrush(QBrush(col))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(bx, by, max(1, int(bar_w) - 2), bh)
+            glow_col = QColor(0, int(200 + 55 * ratio), 255, int(150 * ratio))
+            p.setBrush(QBrush(glow_col))
+            p.drawRect(bx, by, max(1, int(bar_w) - 2), 2)
+        p.setFont(_mono(6))
+        p.setPen(QPen(QColor(0, 150, 200, 100)))
+        for i, freq in enumerate(freqs):
+            idx = int(i * n / len(freqs))
+            fw = p.fontMetrics().horizontalAdvance(freq)
+            p.drawText(int(20 + idx * bar_w - fw / 2), h - 2, freq)
+        for level, label in [(0, "+12"), (0.5, "0"), (1.0, "-12")]:
+            y = int(h * (1 - level) - 12)
+            p.setPen(QPen(QColor(0, 150, 200, 80)))
+            p.drawText(2, y, label)
+            p.drawText(w - 20, y, label)
+
+class ReactorPulse(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._t = 0.0
+        self.setMinimumHeight(40)
+        self.setFixedHeight(50)
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(50)
+
+    def _step(self):
+        self._t = (self._t + 0.08) % (math.pi * 200)
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(0, 8, 20, 160))
+        p.setPen(QPen(QColor(0, 212, 255, 120), 1.5))
+        n = 120
+        pts = []
+        for i in range(n):
+            fx = i / (n - 1)
+            phase = (fx * 8 + self._t * 0.5) % 1.0
+            if 0.3 < phase < 0.35:
+                fy = 0.5 - 0.3 * math.sin((phase - 0.3) / 0.05 * math.pi)
+            elif 0.35 <= phase < 0.4:
+                fy = 0.5 + 0.2 * math.sin((phase - 0.35) / 0.05 * math.pi)
+            elif 0.4 <= phase < 0.45:
+                fy = 0.5 - 0.15 * math.sin((phase - 0.4) / 0.05 * math.pi)
+            else:
+                fy = 0.5
+            pts.append(QPointF(fx * w, fy * h))
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+        p.setPen(QPen(QColor(0, 212, 255, 40), 3))
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+
+class MiniArcIcon(QWidget):
+    def __init__(self, size=28, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._angle = 0.0
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(50)
+
+    def _step(self):
+        self._angle = (self._angle + 3) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        R = min(cx, cy) - 2
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bg = QRadialGradient(cx, cy, R)
+        bg.setColorAt(0, QColor(0, 30, 60, 200))
+        bg.setColorAt(1, QColor(0, 10, 25, 180))
+        p.setBrush(QBrush(bg))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), R, R)
+        p.setPen(QPen(C_CYAN, max(1, R * 0.12)))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), R * 0.85, R * 0.85)
+        for i in range(8):
+            deg = self._angle + i * 45
+            p.setPen(QPen(QColor(0, 200, 255, 160 if i % 2 == 0 else 80), max(1, R * 0.08)))
+            p.drawArc(QRectF(cx - R * 0.65, cy - R * 0.65, R * 1.3, R * 1.3), int(deg * 16), int(20 * 16))
+        cg = QRadialGradient(cx, cy, R * 0.35)
+        cg.setColorAt(0, QColor(220, 245, 255, 220))
+        cg.setColorAt(1, QColor(0, 180, 255, 0))
+        p.setBrush(QBrush(cg))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), R * 0.35, R * 0.35)
+
+class ChatBubble(QFrame):
+    def __init__(self, text, is_user=True, timestamp=None, parent=None):
+        super().__init__(parent)
+        self.is_user = is_user
+        self._full = text
+        self._ts = timestamp or datetime.now()
+        self._build(text)
+
+    def _build(self, text):
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(10)
+        ts_str = self._ts.strftime("%I:%M %p") if isinstance(self._ts, datetime) else str(self._ts)
+        if self.is_user:
+            outer.addStretch()
+            col = QVBoxLayout()
+            col.setSpacing(3)
+            col.setAlignment(Qt.AlignmentFlag.AlignRight)
+            meta = QHBoxLayout()
+            meta.setContentsMargins(0, 0, 8, 0)
+            ts = QLabel(ts_str)
+            ts.setFont(_mono(7))
+            ts.setStyleSheet("color:rgba(0,150,200,100);background:transparent;border:none;")
+            checkmark = QLabel("✓✓")
+            checkmark.setFont(_mono(7))
+            checkmark.setStyleSheet("color:rgba(0,212,255,120);background:transparent;border:none;")
+            meta.addWidget(ts)
+            meta.addSpacing(6)
+            meta.addWidget(checkmark)
+            col.addLayout(meta)
+            self.label = QLabel(text)
+            self.label.setWordWrap(True)
+            self.label.setFont(_mono(10))
+            self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.label.setMaximumWidth(560)
+            self.label.setStyleSheet("""
+                background:rgba(0,25,60,200);
+                color:#C8E8FF;
+                border:1px solid rgba(0,180,220,80);
+                border-top:1px solid rgba(0,212,255,120);
+                border-radius:16px 16px 4px 16px;
+                padding:12px 16px;
+            """)
+            col.addWidget(self.label, alignment=Qt.AlignmentFlag.AlignRight)
+            outer.addLayout(col)
+        else:
+            self._icon = MiniArcIcon(28)
+            outer.addWidget(self._icon, alignment=Qt.AlignmentFlag.AlignTop)
+            col = QVBoxLayout()
+            col.setSpacing(3)
+            meta = QHBoxLayout()
+            meta.setContentsMargins(8, 0, 8, 0)
+            copy_btn = QPushButton("⎘")
+            copy_btn.setFixedSize(16, 14)
+            copy_btn.setStyleSheet(
+                "QPushButton{background:transparent;color:rgba(0,212,255,70);border:none;font-size:9px;}"
+                "QPushButton:hover{color:#00D4FF;}")
+            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._full))
+            ts = QLabel(ts_str)
+            ts.setFont(_mono(7))
+            ts.setStyleSheet("color:rgba(0,150,200,100);background:transparent;border:none;")
+            meta.addWidget(copy_btn)
+            meta.addStretch()
+            meta.addWidget(ts)
+            col.addLayout(meta)
+            # Use QTextEdit instead of QLabel — QLabel clips long word-wrapped text
+            # inside scroll areas; QTextEdit renders the full content correctly.
+            self.label = QTextEdit()
+            self.label.setReadOnly(True)
+            self.label.setFont(_mono(10))
+            self.label.setMinimumWidth(200)
+            self.label.setMaximumWidth(700)
+            self.label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.label.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.label.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.label.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+            self.label.setStyleSheet("""
+                QTextEdit {
+                    background:rgba(0,10,30,240);
+                    color:#A8D8F0;
+                    border:1px solid rgba(0,100,160,80);
+                    border-top:1px solid rgba(0,160,210,100);
+                    border-radius:8px;
+                    padding:6px 12px;
+                }
+                QTextEdit QScrollBar { width:0px; height:0px; }
+            """)
+            # Start collapsed — will expand as text arrives
+            self.label.setFixedHeight(32)
+            self.label.document().setDocumentMargin(4)
+            if text:
+                self.label.setPlainText(text)
+                QTimer.singleShot(0, self._resize_label)
+            self.label.document().contentsChanged.connect(self._resize_label)
+            # Also recalculate on resize so wrapping stays correct
+            orig_resize = self.label.resizeEvent
+            def _on_label_resize(e, orig=orig_resize):
+                orig(e)
+                self._resize_label()
+            self.label.resizeEvent = _on_label_resize
+            col.addWidget(self.label)
+            outer.addLayout(col, stretch=1)
+
+    def _resize_label(self):
+        if not self.is_user and hasattr(self, 'label') and isinstance(self.label, QTextEdit):
+            vw = self.label.viewport().width()
+            if vw < 50:
+                # Widget not laid out yet — defer
+                QTimer.singleShot(30, self._resize_label)
+                return
+            # Set document width to viewport width so line-wrapping is accurate
+            self.label.document().setTextWidth(vw)
+            doc_h = int(self.label.document().size().height())
+            h = max(32, doc_h + 16)  # +16 for top+bottom padding
+            self.label.setFixedHeight(h)
+
+    def append_text(self, t):
+        self._full += t
+        if isinstance(self.label, QTextEdit):
+            self.label.setPlainText(self._full)
+            # _resize_label fires via contentsChanged signal automatically
+        else:
+            self.label.setText(self._full)
+
+class TypingDots(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(28)
+        self._dots = [0.3, 0.3, 0.3]
+        self._step = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._anim)
+        self.hide()
+
+    def start(self):
+        self.show()
+        self._timer.start(160)
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _anim(self):
+        self._step = (self._step + 1) % 3
+        for i in range(3):
+            self._dots[i] = 1.0 if i == self._step else 0.3
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = 4
+        gap = 12
+        x = 22
+        y = self.height() // 2
+        for alpha in self._dots:
+            p.setBrush(QBrush(QColor(0, 212, 255, int(200 * alpha))))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(x, y), r * alpha, r * alpha)
+            x += r * 2 + gap
+
+class SystemStatusBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self._bars = {}
+        for label, key, val in [
+            ("CPU Usage", "cpu", 23),
+            ("RAM Usage", "ram", 45),
+            ("Disk Usage", "disk", 68),
+            ("Network", "net", 42),
+        ]:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            lbl = QLabel(label)
+            lbl.setFont(_mono(8))
+            lbl.setStyleSheet("color:rgba(0,170,210,160);background:transparent;border:none;")
+            lbl.setFixedWidth(75)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(val)
+            bar.setFixedHeight(5)
+            bar.setTextVisible(False)
+            bar.setStyleSheet("""
+                QProgressBar{background:rgba(0,50,80,100);border:none;border-radius:2px;}
+                QProgressBar::chunk{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 rgba(0,120,180,200),stop:1 rgba(0,212,255,255));border-radius:2px;}
+            """)
+            pct = QLabel(f"{val}%")
+            pct.setFont(_mono(8, True))
+            pct.setStyleSheet("color:rgba(0,212,255,200);background:transparent;border:none;")
+            pct.setFixedWidth(32)
+            row.addWidget(lbl)
+            row.addWidget(bar, 1)
+            row.addWidget(pct)
+            lay.addLayout(row)
+            self._bars[key] = (bar, pct)
+        t = QTimer(self)
+        t.timeout.connect(self._refresh)
+        t.start(3000)
+
+    def _refresh(self):
+        try:
+            import psutil
+            vals = {
+                "cpu": int(psutil.cpu_percent()),
+                "ram": int(psutil.virtual_memory().percent),
+                "disk": int(psutil.disk_usage("/").percent),
+                "net": min(100, int(psutil.net_io_counters().bytes_sent / 1e6) % 100),
+            }
+            for k, (bar, pct) in self._bars.items():
+                v = vals.get(k, 0)
+                bar.setValue(v)
+                pct.setText(f"{v}%")
+        except Exception:
+            pass
+
+class ConversationHistory(QWidget):
+    item_clicked = pyqtSignal(str)
+    item_deleted = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.showFullScreen()
+        self.setStyleSheet("background:transparent;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        self._list = QListWidget()
+        self._list.setStyleSheet("""
+            QListWidget{background:transparent;border:none;outline:none;}
+            QListWidget::item{padding:0px;margin:1px;}
+            QListWidget::item:selected{background:rgba(0,212,255,25);}
+            QListWidget::item:hover{background:rgba(0,212,255,12);}
+        """)
+        self._list.itemClicked.connect(lambda i: self.item_clicked.emit(i.data(Qt.ItemDataRole.UserRole) or ""))
+        lay.addWidget(self._list)
 
-        self._state = "idle"
-        self._last_user = ""
-        self._last_jarvis = ""
-        self.voice_worker = None
-        self.tts_worker = None
-        self.llm_worker = None
-        self.conv_history = []
-        self._sentence_queue = None
-        self._tts_stop = None
+        self._view_all_btn = QPushButton("VIEW ALL HISTORY")
+        self._view_all_btn.setFixedHeight(22)
+        self._view_all_btn.setStyleSheet(
+            "QPushButton{background:transparent;color:rgba(0,180,220,140);"
+            "border:none;font-family:'Courier New';font-size:7px;}"
+            "QPushButton:hover{color:#00D4FF;}")
+        self._view_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._view_all_btn.clicked.connect(self._show_all)
+        lay.addWidget(self._view_all_btn)
+        self._show_limit = 6
 
+    def _show_all(self):
+        self._show_limit = 999
+        self._view_all_btn.hide()
+        self.refresh()
+
+    def refresh(self):
+        self._list.clear()
+        chats = list_saved_chats()[:self._show_limit]
+        for fname in chats:
+            try:
+                ts = fname.replace("chat_", "").replace(".json", "")
+                dt = datetime.strptime(ts, "%Y%m%d_%H%M%S")
+                try:
+                    msgs = load_chat(fname)
+                    label = next((m[6:36] for m in msgs if m.startswith("User: ")),
+                                 dt.strftime("%b %d  %H:%M"))
+                except Exception:
+                    label = dt.strftime("%b %d  %H:%M")
+            except Exception:
+                label = fname[:30]
+
+            # Build the row widget
+            row = QWidget()
+            row.setStyleSheet("background:transparent;")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(6, 3, 4, 3)
+            rl.setSpacing(4)
+
+            lbl = QLabel(f"▷  {label}")
+            lbl.setFont(_mono(8))
+            lbl.setStyleSheet("color:rgba(0,180,220,180);background:transparent;")
+            lbl.setWordWrap(False)
+
+            del_btn = QPushButton("✕")
+            del_btn.setFixedSize(16, 16)
+            del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            del_btn.setToolTip("Delete chat")
+            del_btn.setStyleSheet(
+                "QPushButton{background:transparent;color:rgba(255,80,80,140);"
+                "border:1px solid rgba(255,80,80,60);border-radius:3px;font-size:8px;}"
+                "QPushButton:hover{color:rgba(255,80,80,255);border-color:rgba(255,80,80,200);}")
+            del_btn.clicked.connect(lambda _, f=fname: self.item_deleted.emit(f))
+
+            rl.addWidget(lbl, stretch=1)
+            rl.addWidget(del_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+            item = QListWidgetItem(self._list)
+            item.setData(Qt.ItemDataRole.UserRole, fname)
+            # Fix: use a fixed row height so items are always visible
+            item.setSizeHint(QSize(self._list.width(), 28))
+            self._list.setItemWidget(item, row)
+
+class CircularDateClock(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        self._start_time = datetime.now()
+        self.setFixedHeight(88)
+        t = QTimer(self); t.timeout.connect(self.update); t.start(1000)
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        now = datetime.now()
+        ring_r = min(h - 8, 38)
+        rcx, rcy = ring_r + 6, h // 2
+        p.setPen(QPen(QColor(0, 60, 100, 120), ring_r * 0.14))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(rcx, rcy), ring_r, ring_r)
+        p.setPen(QPen(C_CYAN, ring_r * 0.10))
+        p.drawArc(QRectF(rcx - ring_r, rcy - ring_r, ring_r * 2, ring_r * 2), int(90 * 16), int(-270 * 16))
+        p.setFont(_mono(7, True))
+        p.setPen(QPen(QColor(0, 200, 255, 180)))
+        dow = now.strftime("%A").upper()
+        dw = p.fontMetrics().horizontalAdvance(dow)
+        p.drawText(int(rcx - dw / 2), int(rcy - 10), dow)
+        p.setFont(_mono(6))
+        p.setPen(QPen(QColor(0, 150, 200, 140)))
+        mon = now.strftime("%b").upper()
+        mw = p.fontMetrics().horizontalAdvance(mon)
+        p.drawText(int(rcx - mw / 2), int(rcy + 2), mon)
+        p.setFont(QFont("Courier New", 16, QFont.Weight.Bold))
+        p.setPen(QPen(C_CYAN))
+        day = now.strftime("%d")
+        dtw = p.fontMetrics().horizontalAdvance(day)
+        p.drawText(int(rcx - dtw / 2), int(rcy + 18), day)
+        tx = int(rcx + ring_r + 14)
+        p.setFont(QFont("Courier New", 20, QFont.Weight.Bold))
+        p.setPen(QPen(C_CYAN))
+        time_str = now.strftime("%I:%M:%S %p")
+        p.drawText(tx, int(h * 0.48), time_str)
+        elapsed = datetime.now() - self._start_time
+        s = int(elapsed.total_seconds())
+        hrs, rem = divmod(s, 3600); mins, secs = divmod(rem, 60)
+        p.setFont(_mono(7))
+        p.setPen(QPen(QColor(0, 150, 200, 130)))
+        p.drawText(tx, int(h * 0.72), "System Uptime")
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(tx, int(h * 0.88), f"{hrs}h {mins}m {secs}s")
+
+class RadialShortcutsPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(210, 195)
+        self.setStyleSheet("background:transparent;")
+        self._buttons = []
+        shortcuts = list(SHORTCUT_ACTIONS.keys())
+        angles = [-90, -45, 0, 45, 90, 135, 180, -135]
+        cx, cy, radius = 105, 98, 72
+        for i, name in enumerate(shortcuts):
+            btn = QPushButton(name, self)
+            btn.setFixedSize(72, 20)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFont(_mono(6))
+            btn.setStyleSheet(
+                "QPushButton{background:rgba(0,20,45,160);color:rgba(0,180,220,170);"
+                "border:1px solid rgba(0,150,200,70);border-radius:3px;}"
+                "QPushButton:hover{background:rgba(0,212,255,25);color:#00EEFF;}")
+            a = math.radians(angles[i])
+            bx = int(cx + radius * math.cos(a) - 36)
+            by = int(cy + radius * math.sin(a) - 10)
+            btn.move(bx, by)
+            btn.clicked.connect(SHORTCUT_ACTIONS[name])
+            self._buttons.append(btn)
+        self._reactor = ArcReactor(52)
+        self._reactor.setFixedSize(52, 52)
+        self._reactor.move(cx - 26, cy - 26)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(0, 130, 180, 40), 1, Qt.PenStyle.DotLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(105, 98), 72, 72)
+
+class _MiniRing(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._angle = 0.0
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(50)
+
+    def _step(self):
+        self._angle = (self._angle + 2.5) % 360
+        self.update()
+
+    def paintEvent(self, e):
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        R = min(cx, cy) - 4
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(0, 60, 100, 100), 6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), R, R)
+        pen = QPen(C_CYAN, 4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(int(cx - R), int(cy - R), int(R * 2), int(R * 2), int(self._angle * 16), int(260 * 16))
+        p.setFont(_mono(9, True))
+        p.setPen(QPen(C_CYAN))
+        txt = "100%"
+        tw = p.fontMetrics().horizontalAdvance(txt)
+        p.drawText(int(cx - tw / 2), int(cy + 5), txt)
+
+class _MiniWaveform(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._t = 0.0
+        self._active = False
+        t = QTimer(self)
+        t.timeout.connect(self._step)
+        t.start(50)
+
+    def set_active(self, v):
+        self._active = v
+
+    def _step(self):
+        self._t = (self._t + 0.08) % (math.pi * 2)
+        self.update()
+
+    def paintEvent(self, e):
+        w, h = self.width(), self.height()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(0, 212, 255, 160 if self._active else 80), 1.2))
+        n = 60
+        pts = []
+        for i in range(n):
+            fx = i / (n - 1)
+            amp = (0.6 + 0.4 * math.sin(fx * 12 + self._t * 3)) if self._active else 0.2
+            fy = 0.5 + amp * 0.4 * math.sin(fx * 18 + self._t * 4)
+            pts.append(QPointF(fx * w, fy * h))
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+
+class ChatDashboard(QWidget):
+    weather_ready = pyqtSignal(dict)
+    weather_error = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.conversation_history = []
+        self.current_bubble = None
+        self.worker = None
+        self.current_filename = None
+        self._deleted = False
+        self._t0 = None
+        self._weather_busy = False
+        self._stream_buffer = []
+        self._model_ready = False  # set True when warmup completes
+        self._stream_timer = QTimer(self)
+        self._stream_timer.setInterval(33)
+        self._stream_timer.timeout.connect(self._flush_stream_buffer)
+        self.weather_ready.connect(self._update_weather_ui)
+        self.weather_error.connect(self._weather_failed)
         self._build()
 
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        bg = QWidget()
-        bg.setStyleSheet("background-color: rgba(1, 6, 16, 250);")
-        bg_layout = QVBoxLayout(bg)
-        bg_layout.setContentsMargins(40, 40, 40, 40)
-        bg_layout.setSpacing(25)
+        topbar = QWidget()
+        topbar.setFixedHeight(44)
+        topbar.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(0,10,30,240), stop:1 rgba(0,6,20,220));"
+            "border-bottom:1px solid rgba(0,150,200,80);")
+        tbl = QHBoxLayout(topbar)
+        tbl.setContentsMargins(16, 0, 16, 0)
+        tbl.setSpacing(12)
 
-        top = QHBoxLayout()
-        title = QLabel("J.A.R.V.I.S  ///  VOICE MODE")
-        title.setFont(QFont("Courier New", 15, QFont.Weight.Bold))
-        title.setStyleSheet("color: #00D4FF; letter-spacing: 4px;")
-        close_btn = QPushButton("✕ EXIT")
-        close_btn.setFixedSize(100, 34)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 59, 48, 35);
-                color: #FF6B6B;
-                border: 2px solid rgba(255, 59, 48, 140);
-                border-radius: 6px;
-                font-family: 'Courier New';
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: rgba(255, 59, 48, 70); color: #FF3B30; }
-        """)
-        close_btn.clicked.connect(self.close)
-        top.addWidget(title)
-        top.addStretch()
-        top.addWidget(close_btn)
-        bg_layout.addLayout(top)
+        logo_lay = QHBoxLayout()
+        logo_lay.setSpacing(6)
+        logo_icon = QLabel("◈")
+        logo_icon.setFont(_mono(14, True))
+        logo_icon.setStyleSheet("color:#00D4FF;background:transparent;")
+        logo_lay.addWidget(logo_icon)
+        logo_text = QLabel("JARVIS")
+        logo_text.setFont(_orbitron(14, True))
+        logo_text.setStyleSheet("color:#00D4FF;background:transparent;")
+        logo_lay.addWidget(logo_text)
+        tbl.addLayout(logo_lay)
+        tbl.addStretch()
 
-        arc_container = QWidget()
-        arc_layout = QVBoxLayout(arc_container)
-        arc_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.arc = AnimatedArcReactor()
-        self.arc.setFixedSize(320, 320)
-        arc_layout.addWidget(self.arc)
-        bg_layout.addWidget(arc_container)
+        # Title in true center — use a separate absolutely-positioned label
+        # so it stays centered regardless of left/right widget widths
+        title = QLabel("JARVIS AI ASSISTANT", topbar)
+        title.setFont(_orbitron(12, True))
+        title.setStyleSheet("color:rgba(0,212,255,220);background:transparent;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # Reposition on resize via a helper
+        def _center_title():
+            title.setFixedWidth(topbar.width())
+            title.move(0, (topbar.height() - title.sizeHint().height()) // 2)
 
-        self.state_label = QLabel("TAP TO SPEAK")
-        self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.state_label.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
-        self.state_label.setStyleSheet("color: rgba(0,212,255,190); letter-spacing: 3px;")
-        bg_layout.addWidget(self.state_label)
+        def _topbar_resize(e):
+            type(topbar).resizeEvent(topbar, e)
+            _center_title()
 
-        self.transcript_label = QLabel("")
-        self.transcript_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.transcript_label.setWordWrap(True)
-        self.transcript_label.setFont(QFont("Courier New", 12))
-        self.transcript_label.setStyleSheet("color: rgba(224,247,255,170); padding: 0 60px;")
-        self.transcript_label.setMaximumHeight(120)
-        bg_layout.addWidget(self.transcript_label)
+        topbar.resizeEvent = _topbar_resize
+        QTimer.singleShot(0, _center_title)
 
-        bg_layout.addStretch()
+        tbl.addStretch()
 
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.speak_btn = QPushButton("🎤  SPEAK")
-        self.speak_btn.setFixedSize(180, 64)
-        self.speak_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.speak_btn.setStyleSheet(self._speak_btn_style())
-        self.speak_btn.clicked.connect(self._on_speak_btn)
-        self.speak_btn.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-        btn_row.addWidget(self.speak_btn)
-        bg_layout.addLayout(btn_row)
-        bg_layout.addSpacing(30)
+        self._status_lbl = QLabel("●  SYSTEM ONLINE")
+        self._status_lbl.setFont(_mono(8, True))
+        self._status_lbl.setStyleSheet("color:#00FF88;background:transparent;")
+        tbl.addWidget(self._status_lbl)
 
-        root.addWidget(bg)
+        for lbl, slot, accent in [
+            ("🎙  VOICE", self._open_voice, True),
+            ("◉ SAVE", self._save_chat, False),
+            ("⊗ CLEAR", self._clear_chat, False),
+        ]:
+            b = QPushButton(lbl)
+            b.setFixedHeight(28)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFont(_mono(8))
+            style_base = "font-family:'Courier New';font-size:8px;font-weight:bold;padding:0 10px;border-radius:4px;"
+            if accent:
+                b.setStyleSheet(
+                    f"QPushButton{{background:rgba(0,212,255,25);color:#00EEFF;"
+                    f"border:1px solid rgba(0,212,255,160);{style_base}}}"
+                    f"QPushButton:hover{{background:rgba(0,212,255,50);}}")
+            else:
+                b.setStyleSheet(
+                    f"QPushButton{{background:rgba(0,212,255,10);color:rgba(0,180,220,150);"
+                    f"border:1px solid rgba(0,150,200,60);{style_base}}}"
+                    f"QPushButton:hover{{background:rgba(0,212,255,25);color:#00D4FF;}}")
+            b.clicked.connect(slot)
+            tbl.addWidget(b)
+        root.addWidget(topbar)
 
-    def _speak_btn_style(self, active=False):
-        if active:
-            return """
-                QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 rgba(255, 59, 48, 160),
-                        stop:1 rgba(255, 80, 60, 130));
-                    color: #FFFFFF;
-                    border: 2px solid rgba(255, 59, 48, 240);
-                    border-radius: 32px;
-                    font-weight: bold;
-                    letter-spacing: 1px;
-                }
-                QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(255, 80, 60, 200),
-                    stop:1 rgba(255, 120, 100, 170)); }
-            """
-        return """
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 120, 220, 140),
-                    stop:1 rgba(0, 70, 170, 110));
-                color: #FFFFFF;
-                border: 2px solid rgba(0, 212, 255, 240);
-                border-radius: 32px;
-                font-weight: bold;
-                letter-spacing: 1px;
-            }
-            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 rgba(0, 150, 255, 180),
-                stop:1 rgba(0, 100, 210, 150)); }
-        """
+        main = QHBoxLayout()
+        main.setContentsMargins(10, 8, 10, 8)
+        main.setSpacing(10)
 
-    def _set_state(self, state):
-        self._state = state
-        self.arc.set_state(state)
-        if state == "listening":
-            self.state_label.setText("●● LISTENING ●●")
-            self.state_label.setStyleSheet("color: #00FF88; letter-spacing: 3px; font-weight: bold;")
-            self.speak_btn.setText("⏹  STOP")
-            self.speak_btn.setStyleSheet(self._speak_btn_style(active=True))
-        elif state == "responding":
-            self.state_label.setText("●● PROCESSING ●●")
-            self.state_label.setStyleSheet("color: #00D4FF; letter-spacing: 3px; font-weight: bold;")
-            self.speak_btn.setText("🎤  SPEAK")
-            self.speak_btn.setStyleSheet(self._speak_btn_style())
-            self.speak_btn.setEnabled(False)
-        else:
-            self.state_label.setText("TAP TO SPEAK")
-            self.state_label.setStyleSheet("color: rgba(0,212,255,190); letter-spacing: 3px;")
-            self.speak_btn.setText("🎤  SPEAK")
-            self.speak_btn.setStyleSheet(self._speak_btn_style())
-            self.speak_btn.setEnabled(True)
+        left = QVBoxLayout()
+        left.setSpacing(8)
 
-    def _on_speak_btn(self):
-        if self._state == "listening":
-            if self.voice_worker and self.voice_worker.isRunning():
-                self.voice_worker.stop_recording()
-        elif self._state == "idle":
-            self._start_listening()
+        clock_frame = QFrame()
+        clock_frame.setFixedWidth(220)
+        clock_frame.setStyleSheet(PANEL_STYLE)
+        clf = QVBoxLayout(clock_frame)
+        clf.setContentsMargins(10, 8, 10, 8)
+        clf.setSpacing(0)
+        self._date_clock = CircularDateClock()
+        clf.addWidget(self._date_clock)
+        left.addWidget(clock_frame)
 
-    def _start_listening(self):
-        self._set_state("listening")
-        self.voice_worker = VoiceWorker()
-        self.voice_worker.text_received.connect(self._on_user_speech)
-        self.voice_worker.error.connect(self._on_voice_error)
-        self.voice_worker.start()
+        sys_frame = QFrame()
+        sys_frame.setFixedWidth(220)
+        sys_frame.setStyleSheet(PANEL_STYLE)
+        syf = QVBoxLayout(sys_frame)
+        syf.setContentsMargins(12, 10, 12, 10)
+        syf.setSpacing(6)
+        syf.addWidget(section_header("SYSTEM STATUS"))
+        syf.addWidget(SystemStatusBar())
+        left.addWidget(sys_frame)
 
-    def _on_user_speech(self, text):
-        self._last_user = text
-        self.transcript_label.setText(f"You: {text}")
-        self._set_state("responding")
-        self.conv_history.append(f"User: {text}")
+        pwr_frame = QFrame()
+        pwr_frame.setFixedWidth(220)
+        pwr_frame.setStyleSheet(PANEL_STYLE)
+        pwf = QVBoxLayout(pwr_frame)
+        pwf.setContentsMargins(12, 10, 12, 10)
+        pwf.setSpacing(6)
+        pwf.addWidget(section_header("POWER STATUS"))
+        pwr_row = QHBoxLayout()
+        self._pwr_ring = _MiniRing()
+        self._pwr_ring.setFixedSize(70, 70)
+        pwr_row.addWidget(self._pwr_ring)
+        pwr_info = QVBoxLayout()
+        pwr_info.setSpacing(2)
+        self._pwr_pct_lbl = QLabel("100%")
+        self._pwr_pct_lbl.setFont(QFont("Courier New", 16, QFont.Weight.Bold))
+        self._pwr_pct_lbl.setStyleSheet("color:#00D4FF;background:transparent;")
+        pwr_info.addWidget(self._pwr_pct_lbl)
+        pwr_info.addWidget(_label("ONLINE", 7, "color:#00FF88;"))
+        pwr_row.addLayout(pwr_info)
+        pwr_row.addStretch()
+        pwf.addLayout(pwr_row)
+        conn_lbl = _label("AC POWER CONNECTED", 7, "rgba(0,200,255,140)")
+        pwf.addWidget(conn_lbl)
+        mode_lbl = _label("High Performance Mode", 7, "rgba(0,150,200,110)")
+        pwf.addWidget(mode_lbl)
+        left.addWidget(pwr_frame)
 
-        self._sentence_queue = queue.Queue()
-        self._tts_stop = threading.Event()
-        self.tts_worker = TTSWorker(self._sentence_queue, self._tts_stop)
-        self.tts_worker.finished_speaking.connect(self._on_tts_done)
-        self.tts_worker.start()
+        voice_frame = QFrame()
+        voice_frame.setFixedWidth(220)
+        voice_frame.setStyleSheet(PANEL_STYLE)
+        vof = QVBoxLayout(voice_frame)
+        vof.setContentsMargins(12, 10, 12, 10)
+        vof.setSpacing(6)
+        vof.addWidget(section_header("VOICE STATUS"))
+        self._voice_wave = _MiniWaveform()
+        self._voice_wave.setFixedHeight(40)
+        vof.addWidget(self._voice_wave)
+        self._voice_status_lbl = _label("Idle...", 8, "rgba(0,180,220,140)")
+        self._voice_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vof.addWidget(self._voice_status_lbl)
+        mic_btn = QPushButton("🎤")
+        mic_btn.setFixedSize(36, 36)
+        mic_btn.setStyleSheet(
+            "QPushButton{background:rgba(0,212,255,20);color:#00D4FF;"
+            "border:2px solid rgba(0,212,255,120);border-radius:18px;font-size:16px;}"
+            "QPushButton:hover{background:rgba(0,212,255,50);}")
+        mic_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        mic_btn.clicked.connect(self._open_voice)
+        vof.addWidget(mic_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        left.addWidget(voice_frame)
+        left.addStretch()
+        main.addLayout(left)
 
-        use_news = needs_realtime(text.lower())
-        self.llm_worker = VoiceLLMWorker(text, list(self.conv_history), use_news=use_news)
-        self.llm_worker.sentence_ready.connect(self._on_sentence)
-        self.llm_worker.finished.connect(self._on_llm_response)
-        self.llm_worker.error.connect(self._on_llm_error)
-        self.llm_worker.start()
-
-    def _on_sentence(self, sentence):
-        if self._sentence_queue:
-            self._sentence_queue.put(sentence)
-        current = self.transcript_label.text()
-        if current.startswith("You:"):
-            self.transcript_label.setText(f"Jarvis: {sentence}")
-        else:
-            preview = (current + " " + sentence)[-160:]
-            self.transcript_label.setText(preview)
-
-    def _on_llm_response(self, response):
-        self._last_jarvis = response
-        self.conv_history.append(f"Jarvis: {response}")
-        if self._sentence_queue:
-            self._sentence_queue.put(None)
-        self.transcript_ready.emit(self._last_user, response)
-
-    def _on_tts_done(self):
-        self._set_state("idle")
-
-    def _on_voice_error(self, error):
-        self.transcript_label.setText(f"Error: {error}")
-        if self._tts_stop:
-            self._tts_stop.set()
-        self._set_state("idle")
-
-    def _on_llm_error(self, error):
-        self.transcript_label.setText("Connection error. Is Ollama running?")
-        if self._sentence_queue:
-            self._sentence_queue.put(None)
-        self._set_state("idle")
-
-
-# ─────────────────────────────────────────────────────────
-#  MAIN WINDOW
-# ─────────────────────────────────────────────────────────
-class JarvisHolographicWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.conversation_history = []
-        self.current_bubble = None
-        self.worker = None
-        self.warmup_worker = None
-        self.current_filename = None
-        self._model_ready = False
-        self._deleted = False
-        self._setup_window()
-        self._setup_ui()
-        self._warmup_model()
-        self._greet()
-
-    def _setup_window(self):
-        self.setWindowTitle("J.A.R.V.I.S - HOLOGRAPHIC INTERFACE v2.0")
-        self.setMinimumSize(1280, 900)
-        self.resize(1500, 950)
-        self.setStyleSheet("background-color: #010810;")
-
-    def _setup_ui(self):
-        central = QWidget()
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(18)
-
-        self.history_panel = CollapsibleHistoryPanel()
-        self.history_panel.new_chat.connect(self._new_chat)
-        self.history_panel.chat_selected.connect(self._load_chat)
-        self.history_panel.chat_deleted.connect(self._delete_chat)
-        self.history_panel.refresh()
-
-        center = QWidget()
-        center_layout = QVBoxLayout(center)
-        center_layout.setContentsMargins(25, 25, 25, 25)
-        center_layout.setSpacing(18)
-
-        header = QHBoxLayout()
-        title = QLabel("J.A.R.V.I.S")
-        title.setFont(QFont("Courier New", 28, QFont.Weight.Bold))
-        title.setStyleSheet("color: #00D4FF; letter-spacing: 6px;")
-
-        header.addWidget(title)
-        header.addStretch()
-
-        self.status_label = QLabel("● SYSTEM ONLINE")
-        self.status_label.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        self.status_label.setStyleSheet("color: #00FF88; letter-spacing: 2px;")
-
-        voice_btn = QPushButton("🎙️ VOICE")
-        voice_btn.setFixedSize(120, 34)
-        voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        voice_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 212, 255, 50),
-                    stop:1 rgba(0, 150, 200, 30));
-                color: #00D4FF;
-                border: 1px solid rgba(0, 212, 255, 160);
-                border-radius: 6px;
-                font-family: 'Courier New';
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 rgba(0, 212, 255, 100),
-                stop:1 rgba(0, 150, 200, 80));
-                border-color: #00D4FF; }
-        """)
-        voice_btn.clicked.connect(self._open_voice_chat)
-
-        save_btn = QPushButton("[ SAVE ]")
-        save_btn.setFixedSize(90, 34)
-        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        save_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: rgba(0, 212, 255, 150);
-                border: 1px solid rgba(0, 212, 255, 70);
-                border-radius: 4px;
-                font-family: 'Courier New';
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: rgba(0, 212, 255, 15); color: #00D4FF; border-color: #00D4FF; }
-        """)
-        save_btn.clicked.connect(self._save_chat)
-
-        clear_btn = QPushButton("[ CLEAR ]")
-        clear_btn.setFixedSize(90, 34)
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: rgba(0, 212, 255, 150);
-                border: 1px solid rgba(0, 212, 255, 70);
-                border-radius: 4px;
-                font-family: 'Courier New';
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: rgba(0, 212, 255, 15); color: #00D4FF; border-color: #00D4FF; }
-        """)
-        clear_btn.clicked.connect(self._clear_chat)
-
-        header.addWidget(self.status_label)
-        header.addSpacing(8)
-        header.addWidget(voice_btn)
-        header.addSpacing(6)
-        header.addWidget(save_btn)
-        header.addSpacing(6)
-        header.addWidget(clear_btn)
-        center_layout.addLayout(header)
+        center = QVBoxLayout()
+        center.setSpacing(8)
 
         arc_container = QWidget()
-        arc_layout = QVBoxLayout(arc_container)
-        arc_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.arc_reactor = AnimatedArcReactor()
-        self.arc_reactor.setFixedSize(220, 220)
-        arc_layout.addWidget(self.arc_reactor)
-        center_layout.addWidget(arc_container)
+        arc_container.setStyleSheet("background:transparent;")
+        ac_lay = QGridLayout(arc_container)
+        ac_lay.setContentsMargins(0, 0, 0, 0)
+        ac_lay.setSpacing(0)
+
+        self.arc = ArcReactor(320)
+        arc_cell = QWidget()
+        arc_cell_lay = QVBoxLayout(arc_cell)
+        arc_cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arc_cell_lay.addWidget(self.arc)
+        ac_lay.addWidget(arc_cell, 1, 1)
+
+        left_labels = ["SYS", "GEO", "MED", "NET", "CPU", "DOC"]
+        right_labels = ["CRM", "PWR", "COM", "VID", "AUD", "CFG"]
+        lbl_col = QVBoxLayout()
+        lbl_col.setSpacing(8)
+        lbl_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        for txt in left_labels:
+            lb = _label(txt, 7, "rgba(0,180,220,130)")
+            lb.setAlignment(Qt.AlignmentFlag.AlignRight)
+            lbl_col.addWidget(lb)
+        rbl_col = QVBoxLayout()
+        rbl_col.setSpacing(8)
+        rbl_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        for txt in right_labels:
+            lb = _label(txt, 7, "rgba(0,180,220,130)")
+            lb.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            rbl_col.addWidget(lb)
+        left_w = QWidget()
+        left_w.setLayout(lbl_col)
+        left_w.setFixedWidth(38)
+        right_w = QWidget()
+        right_w.setLayout(rbl_col)
+        right_w.setFixedWidth(38)
+        ac_lay.addWidget(left_w, 1, 0)
+        ac_lay.addWidget(right_w, 1, 2)
+
+        self._arc_time = _label(datetime.now().strftime("%I:%M %p"), 8, "rgba(0,212,255,180)", bold=True)
+        self._arc_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ac_lay.addWidget(self._arc_time, 0, 1)
+        online_lbl = _label("●  ONLINE", 9, "rgba(0,212,255,200)", bold=True)
+        online_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ac_lay.addWidget(online_lbl, 2, 1)
+
+        t_arc = QTimer(self)
+        t_arc.timeout.connect(
+            lambda: self._arc_time.setText(datetime.now().strftime("%I:%M %p")))
+        t_arc.start(30000)
+        center.addWidget(arc_container)
+
+        chat_frame = QFrame()
+        chat_frame.setStyleSheet("""
+            QFrame{
+                background:rgba(0,8,24,160);
+                border:1px solid rgba(0,130,180,70);
+                border-top:1px solid rgba(0,180,220,120);
+                border-radius:6px;
+            }""")
+        cf_lay = QVBoxLayout(chat_frame)
+        cf_lay.setContentsMargins(0, 0, 0, 0)
+        cf_lay.setSpacing(0)
+
+        chat_hdr = QWidget()
+        chat_hdr.setFixedHeight(32)
+        chat_hdr.setStyleSheet(
+            "background:rgba(0,12,30,180);"
+            "border-bottom:1px solid rgba(0,130,180,60);"
+            "border-radius:6px 6px 0 0;")
+        ch_lay = QHBoxLayout(chat_hdr)
+        ch_lay.setContentsMargins(12, 0, 12, 0)
+        ch_lay.addWidget(_label("CHAT WITH JARVIS", 8, "rgba(0,212,255,200)", bold=True))
+        ch_lay.addStretch()
+        for icon in ["⚙", "⋯"]:
+            b = QPushButton(icon)
+            b.setFixedSize(22, 22)
+            b.setStyleSheet(
+                "QPushButton{background:transparent;color:rgba(0,180,220,120);border:none;font-size:12px;}"
+                "QPushButton:hover{color:#00D4FF;}")
+            ch_lay.addWidget(b)
+        cf_lay.addWidget(chat_hdr)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("""
-            QScrollArea { border: none; background-color: transparent; }
-            QScrollBar:vertical { width: 5px; background: transparent; }
-            QScrollBar::handle:vertical {
-                background: rgba(0, 212, 255, 120);
-                border-radius: 2px;
-                min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover { background: rgba(0, 212, 255, 200); }
-        """)
-
+            QScrollArea{border:none;background:transparent;}
+            QScrollBar:vertical{width:4px;background:transparent;}
+            QScrollBar::handle:vertical{background:rgba(0,180,220,80);border-radius:2px;min-height:20px;}
+            QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}""")
         self.chat_widget = QWidget()
-        self.chat_widget.setStyleSheet("background-color: transparent;")
+        self.chat_widget.setStyleSheet("background:transparent;")
         self.chat_layout = QVBoxLayout(self.chat_widget)
-        self.chat_layout.setContentsMargins(12, 12, 12, 12)
-        self.chat_layout.setSpacing(8)
+        self.chat_layout.setContentsMargins(8, 8, 8, 8)
+        self.chat_layout.setSpacing(6)
         self.chat_layout.addStretch()
         scroll.setWidget(self.chat_widget)
+        self._scroll = scroll
+        cf_lay.addWidget(scroll)
+        self.typing = TypingDots()
+        cf_lay.addWidget(self.typing)
+        center.addWidget(chat_frame, stretch=1)
 
-        self.typing_indicator = TypingIndicator()
-
-        chat_container = QVBoxLayout()
-        chat_container.addWidget(scroll)
-        chat_container.addWidget(self.typing_indicator)
-        center_layout.addLayout(chat_container)
-
-        char_row = QHBoxLayout()
-        self.char_count = QLabel("0 / 500")
-        self.char_count.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        self.char_count.setStyleSheet("color: rgba(0,212,255,70);")
-        char_row.addStretch()
-        char_row.addWidget(self.char_count)
-        center_layout.addLayout(char_row)
-
-        input_frame = QFrame()
-        input_frame.setStyleSheet("""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 rgba(0, 30, 80, 170),
-                stop:1 rgba(0, 20, 60, 150));
-            border: 1px solid rgba(0, 212, 255, 160);
-            border-radius: 10px;
-        """)
-        input_layout = QHBoxLayout(input_frame)
-        input_layout.setContentsMargins(12, 8, 8, 8)
-        input_layout.setSpacing(8)
-
-        prompt_label = QLabel(">_")
-        prompt_label.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
-        prompt_label.setStyleSheet("color: #00D4FF;")
-
-        self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("ENTER COMMAND...")
-        self.input_field.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
-        self.input_field.setFixedHeight(44)
-        self.input_field.setMaxLength(500)
-        self.input_field.setStyleSheet("""
-            QLineEdit {
-                background-color: transparent;
-                color: #00D4FF;
-                border: none;
-                padding: 0 8px;
-                selection-background-color: rgba(0, 212, 255, 100);
-            }
-            QLineEdit:focus { outline: none; }
-        """)
-        self.input_field.returnPressed.connect(self._send)
-        self.input_field.textChanged.connect(self._update_char_count)
-
-        self.send_btn = QPushButton("SEND ▶")
-        self.send_btn.setFixedSize(110, 44)
+        inp_frame = QFrame()
+        inp_frame.setStyleSheet("""
+            QFrame{
+                background:rgba(0,10,28,200);
+                border:1px solid rgba(0,180,220,120);
+                border-radius:24px;
+            }""")
+        inp_lay = QHBoxLayout(inp_frame)
+        inp_lay.setContentsMargins(12, 6, 6, 6)
+        inp_lay.setSpacing(8)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Type your message...")
+        self.input.setFont(_mono(10))
+        self.input.setFixedHeight(40)
+        self.input.setMaxLength(500)
+        self.input.setStyleSheet(
+            "QLineEdit{background:transparent;color:#B8F0FF;border:none;}"
+            "QLineEdit::placeholder{color:rgba(0,150,180,80);}")
+        self.input.returnPressed.connect(self._send)
+        self.send_btn = QPushButton("SEND")
+        self.send_btn.setFixedSize(80, 38)
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_btn.setFont(_mono(9, True))
         self.send_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 140, 255, 160),
-                    stop:1 rgba(0, 90, 210, 140));
-                color: #FFFFFF;
-                border: 1px solid rgba(0, 212, 255, 200);
-                border-radius: 8px;
-                font-family: 'Courier New';
-                font-size: 11px;
-                font-weight: bold;
-                letter-spacing: 1px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(0, 170, 255, 200),
-                    stop:1 rgba(0, 120, 240, 180));
-            }
-            QPushButton:disabled {
-                background-color: rgba(0, 212, 255, 25);
-                color: rgba(0, 212, 255, 50);
-            }
-        """)
+            QPushButton{
+                background:rgba(0,20,50,180);
+                color:#00EEFF;border:2px solid rgba(0,212,255,200);
+                border-radius:19px;letter-spacing:2px;padding:0 16px;}
+            QPushButton:hover{background:rgba(0,212,255,30);border-color:#00EEFF;}
+            QPushButton:disabled{background:rgba(0,30,60,100);color:rgba(0,180,220,60);
+                border-color:rgba(0,150,200,80);}""")
         self.send_btn.clicked.connect(self._send)
+        mic2 = QPushButton("🎤")
+        mic2.setFixedSize(38, 38)
+        mic2.setStyleSheet(
+            "QPushButton{background:rgba(0,212,255,15);color:#00D4FF;"
+            "border:2px solid rgba(0,212,255,120);border-radius:19px;font-size:16px;}"
+            "QPushButton:hover{background:rgba(0,212,255,40);}")
+        mic2.setCursor(Qt.CursorShape.PointingHandCursor)
+        mic2.clicked.connect(self._open_voice)
+        inp_lay.addWidget(self.input)
+        inp_lay.addWidget(self.send_btn)
+        inp_lay.addWidget(mic2)
+        center.addWidget(inp_frame)
+        main.addLayout(center, stretch=1)
 
-        input_layout.addWidget(prompt_label)
-        input_layout.addWidget(self.input_field)
-        input_layout.addWidget(self.send_btn)
-        center_layout.addWidget(input_frame)
+        right = QVBoxLayout()
+        right.setSpacing(8)
 
-        self.holo_bg = HolographicBackground()
-        self.holo_bg.lower()
+        sc_frame = QFrame()
+        sc_frame.setFixedWidth(210)
+        sc_frame.setStyleSheet(PANEL_STYLE)
+        scf = QVBoxLayout(sc_frame)
+        scf.setContentsMargins(8, 8, 8, 8)
+        scf.setSpacing(4)
+        scf.addWidget(section_header("SYSTEM SHORTCUTS"))
+        scf.addWidget(RadialShortcutsPanel(), alignment=Qt.AlignmentFlag.AlignCenter)
+        right.addWidget(sc_frame)
 
-        root.addWidget(self.history_panel)
-        root.addWidget(center)
+        tools_frame = QFrame()
+        tools_frame.setFixedWidth(210)
+        tools_frame.setStyleSheet(PANEL_STYLE)
+        tf = QVBoxLayout(tools_frame)
+        tf.setContentsMargins(12, 10, 12, 10)
+        tf.setSpacing(4)
+        tf.addWidget(section_header("TOOLS"))
+        tools = [("⊞", "Open Calculator"), ("⌕", "Search the Web"),
+                 ("✎", "Open Notepad"), ("⎙", "Take a Screenshot")]
+        for icon, name in tools:
+            btn = QPushButton(f"  {icon}  {name}")
+            btn.setFixedHeight(24)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton{background:transparent;color:rgba(0,180,220,140);"
+                "border:none;font-family:'Courier New';font-size:8px;text-align:left;}"
+                "QPushButton:hover{color:#00D4FF;background:rgba(0,212,255,8);border-radius:3px;}")
+            if name in TOOL_ACTIONS:
+                btn.clicked.connect(TOOL_ACTIONS[name])
+            tf.addWidget(btn)
+        right.addWidget(tools_frame)
 
-        main_stack = QWidget()
-        stack_layout = QVBoxLayout(main_stack)
-        stack_layout.setContentsMargins(0, 0, 0, 0)
-        stack_layout.addWidget(self.holo_bg)
-        stack_layout.addWidget(central)
+        hist_frame = QFrame()
+        hist_frame.setFixedWidth(210)
+        hist_frame.setStyleSheet(PANEL_STYLE)
+        hf = QVBoxLayout(hist_frame)
+        hf.setContentsMargins(12, 10, 12, 10)
+        hf.setSpacing(4)
+        hf.addWidget(section_header("CONVERSATION HISTORY"))
+        self.hist_widget = ConversationHistory()
+        self.hist_widget.item_clicked.connect(self._load_chat)
+        self.hist_widget.item_deleted.connect(self._delete_history_chat)
+        self.hist_widget.refresh()
+        hf.addWidget(self.hist_widget)
+        new_btn = QPushButton("＋  NEW CHAT")
+        new_btn.setFixedHeight(24)
+        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setStyleSheet(
+            "QPushButton{background:rgba(0,212,255,12);color:rgba(0,212,255,180);"
+            "border:1px solid rgba(0,180,220,80);border-radius:3px;"
+            "font-family:'Courier New';font-size:7px;font-weight:bold;}"
+            "QPushButton:hover{background:rgba(0,212,255,30);}")
+        new_btn.clicked.connect(self._new_chat)
+        hf.addWidget(new_btn)
+        right.addWidget(hist_frame)
 
-        self.setCentralWidget(main_stack)
+        wx_frame = QFrame()
+        wx_frame.setFixedWidth(210)
+        wx_frame.setStyleSheet(PANEL_STYLE)
+        wxf = QVBoxLayout(wx_frame)
+        wxf.setContentsMargins(12, 10, 12, 10)
+        wxf.setSpacing(4)
+        wxf.addWidget(section_header("WEATHER"))
+        wx_row = QHBoxLayout()
+        self._wx_icon_lbl = QLabel("🌡")
+        self._wx_icon_lbl.setFont(QFont("", 28))
+        self._wx_icon_lbl.setStyleSheet("color:rgba(150,200,220,160);background:transparent;")
+        wx_row.addWidget(self._wx_icon_lbl)
+        wx_info = QVBoxLayout()
+        wx_info.setSpacing(1)
+        self._wx_cond = _label("MOSTLY CLOUDY", 7, "rgba(0,200,255,180)", bold=True)
+        self._wx_temp = QLabel("--°")
+        self._wx_temp.setFont(QFont("Courier New", 22, QFont.Weight.Bold))
+        self._wx_temp.setStyleSheet("color:#00D4FF;background:transparent;")
+        wx_info.addWidget(self._wx_cond)
+        wx_info.addWidget(self._wx_temp)
+        wx_row.addLayout(wx_info)
+        wx_row.addStretch()
+        wxf.addLayout(wx_row)
+        self._wx_feel = QLabel("--°")
+        self._wx_feel.setFont(_mono(8, True))
+        self._wx_feel.setStyleSheet("color:#00D4FF;background:transparent;border:none;")
+        wxf.addWidget(stat_row("Feels like", self._wx_feel))
+        self._wx_humid = QLabel("--%")
+        self._wx_humid.setFont(_mono(8, True))
+        self._wx_humid.setStyleSheet("color:#00D4FF;background:transparent;border:none;")
+        wxf.addWidget(stat_row("Humidity", self._wx_humid))
+        self._wx_wind = QLabel("-- km/h")
+        self._wx_wind.setFont(_mono(8, True))
+        self._wx_wind.setStyleSheet("color:#00D4FF;background:transparent;border:none;")
+        wxf.addWidget(stat_row("Wind", self._wx_wind))
+        right.addWidget(wx_frame)
+        right.addStretch()
+        main.addLayout(right)
+        root.addLayout(main, stretch=1)
 
-    def _warmup_model(self):
-        self.warmup_worker = ModelWarmupWorker()
-        self.warmup_worker.warmup_complete.connect(self._on_warmup_complete)
-        self.warmup_worker.start()
+        footer = QWidget()
+        footer.setFixedHeight(36)
+        footer.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(0,6,18,240), stop:1 rgba(0,4,14,220));"
+            "border-top:1px solid rgba(0,100,160,70);")
+        fl = QHBoxLayout(footer)
+        fl.setContentsMargins(16, 0, 16, 0)
+        fl.setSpacing(8)
+        for icon, tip, slot in [
+            ("⌂", "home", None),
+            ("⎘", "copy", lambda: QApplication.clipboard().setText(
+                self.conversation_history[-1].split(": ", 1)[1] if self.conversation_history else "")),
+            ("⬇", "downloads", SHORTCUT_ACTIONS["Downloads"]),
+            ("🔊", "voice", self._open_voice),
+            ("📋", "history", lambda: self.hist_widget.refresh()),
+        ]:
+            b = QPushButton(icon)
+            b.setFixedSize(32, 28)
+            b.setToolTip(tip)
+            b.setStyleSheet(
+                "QPushButton{background:rgba(0,212,255,10);color:rgba(0,200,220,160);"
+                "border:1px solid rgba(0,150,200,50);border-radius:4px;font-size:13px;}"
+                "QPushButton:hover{background:rgba(0,212,255,30);}")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            if slot:
+                b.clicked.connect(slot)
+            fl.addWidget(b)
+        fl.addStretch()
+        os_lbl = QLabel(f"JARVIS OS {OS_VERSION}")
+        os_lbl.setFont(_mono(7))
+        os_lbl.setStyleSheet("color:rgba(0,150,200,120);background:transparent;")
+        fl.addWidget(os_lbl)
+        root.addWidget(footer)
 
-    def _on_warmup_complete(self):
-        self._model_ready = True
+        self._add_bubble(f"JARVIS ONLINE. Welcome back, {USER_NAME}. All systems initialized.", is_user=False)
+        QTimer.singleShot(100, self._fetch_weather)
+        # preload_piper_voice already called at startup — no duplicate needed
+        self._weather_timer = QTimer(self)
+        self._weather_timer.timeout.connect(self._fetch_weather)
+        self._weather_timer.start(WEATHER_REFRESH_MS)
 
-    def _greet(self):
-        self._add_bubble("JARVIS ONLINE. Systems initialized. How may I assist you?", is_user=False)
+    # Dynamic weather icon based on condition text
+    @staticmethod
+    def _weather_icon(desc: str) -> str:
+        d = desc.lower()
+        if any(x in d for x in ("thunder", "storm", "lightning")):
+            return "⛈"
+        if any(x in d for x in ("snow", "sleet", "blizzard", "hail")):
+            return "🌨"
+        if any(x in d for x in ("rain", "drizzle", "shower", "mist", "fog")):
+            return "🌧"
+        if any(x in d for x in ("partly", "partial", "overcast", "mostly cloudy")):
+            return "⛅"
+        if any(x in d for x in ("cloud", "cloudy")):
+            return "☁"
+        if any(x in d for x in ("clear", "sunny", "fair", "bright")):
+            return "☀"
+        return "🌡"
+
+    # FIXED: Fetch weather for Mohali, Punjab, India specifically
+    def _fetch_weather(self):
+        if self._weather_busy:
+            return
+        self._weather_busy = True
+        self._wx_cond.setText("UPDATING...")
+
+        def _do():
+            # Primary: wttr.in JSON API
+            try:
+                loc_encoded = urllib.parse.quote(WEATHER_LOCATION)
+                url = f"https://wttr.in/{loc_encoded}?format=j1"
+                r = _http().get(url, timeout=8)
+                r.raise_for_status()
+                d = r.json()
+                cur = d["current_condition"][0]
+                desc = cur.get("weatherDesc", [{}])[0].get("value", "--")
+                self.weather_ready.emit({
+                    "temp": cur.get("temp_C", "--"),
+                    "desc": desc,
+                    "feel": cur.get("FeelsLikeC", "--"),
+                    "humid": cur.get("humidity", "--"),
+                    "wind": cur.get("windspeedKmph", "--"),
+                    "icon": self._weather_icon(desc),
+                })
+                return
+            except Exception:
+                pass
+
+            # Fallback: open-meteo (Mohali coords: 30.7046, 76.7179)
+            try:
+                url2 = (
+                    "https://api.open-meteo.com/v1/forecast"
+                    "?latitude=30.7046&longitude=76.7179"
+                    "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+                    "wind_speed_10m,weather_code&wind_speed_unit=kmh"
+                )
+                r2 = _http().get(url2, timeout=8)
+                r2.raise_for_status()
+                d2 = r2.json()["current"]
+                wcode = d2.get("weather_code", 0)
+                # Map WMO weather codes to simple descriptions
+                _wmo = {
+                    0: "Clear Sky", 1: "Mainly Clear", 2: "Partly Cloudy", 3: "Overcast",
+                    45: "Foggy", 48: "Icy Fog", 51: "Light Drizzle", 53: "Drizzle",
+                    55: "Heavy Drizzle", 61: "Light Rain", 63: "Rain", 65: "Heavy Rain",
+                    71: "Light Snow", 73: "Snow", 75: "Heavy Snow", 80: "Rain Showers",
+                    81: "Rain Showers", 82: "Heavy Showers", 95: "Thunderstorm",
+                    96: "Thunderstorm", 99: "Thunderstorm",
+                }
+                desc2 = _wmo.get(wcode, "Cloudy")
+                self.weather_ready.emit({
+                    "temp": str(round(d2.get("temperature_2m", 0))),
+                    "desc": desc2,
+                    "feel": str(round(d2.get("apparent_temperature", 0))),
+                    "humid": str(round(d2.get("relative_humidity_2m", 0))),
+                    "wind": str(round(d2.get("wind_speed_10m", 0))),
+                    "icon": self._weather_icon(desc2),
+                })
+            except Exception as e:
+                self.weather_error.emit(str(e))
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _update_weather_ui(self, data):
+        self._weather_busy = False
+        self._wx_temp.setText(f"{data.get('temp', '--')}°")
+        self._wx_cond.setText(str(data.get("desc", "--"))[:16].upper())
+        self._wx_feel.setText(f"{data.get('feel', '--')}°")
+        self._wx_humid.setText(f"{data.get('humid', '--')}%")
+        self._wx_wind.setText(f"{data.get('wind', '--')} km/h")
+        # Update weather icon dynamically
+        if hasattr(self, '_wx_icon_lbl'):
+            self._wx_icon_lbl.setText(data.get("icon", "🌡"))
+
+    def _weather_failed(self, msg):
+        self._weather_busy = False
+        self._wx_cond.setText("WEATHER OFFLINE")
+        print(f"Weather fetch error: {msg}")
 
     def _add_bubble(self, text, is_user=True):
-        bubble = HolographicBubble(text, is_user=is_user)
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
-        self._scroll_to_bottom()
-        return bubble
+        b = ChatBubble(text, is_user=is_user)
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, b)
+        self._scroll.verticalScrollBar().setValue(self._scroll.verticalScrollBar().maximum())
+        return b
 
-    def _scroll_to_bottom(self):
-        QApplication.processEvents()
+    def _queue_stream_text(self, text):
+        self._stream_buffer.append(text)
+        if not self._stream_timer.isActive():
+            self._stream_timer.start()
 
-    def _update_char_count(self, text):
-        count = len(text)
-        self.char_count.setText(f"{count} / 500")
-        if count > 400:
-            self.char_count.setStyleSheet("color: rgba(255,59,48,160);")
-        elif count > 300:
-            self.char_count.setStyleSheet("color: rgba(255,159,0,160);")
+    def _flush_stream_buffer(self):
+        if not self._stream_buffer:
+            self._stream_timer.stop()
+            return
+        if self.current_bubble:
+            chunk = "".join(self._stream_buffer)
+            self._stream_buffer.clear()
+            self.current_bubble.append_text(chunk)
+            self._scroll.verticalScrollBar().setValue(self._scroll.verticalScrollBar().maximum())
+
+    def _set_thinking(self, on):
+        self.send_btn.setEnabled(not on)
+        self.input.setEnabled(not on)
+        if on:
+            self.typing.start()
+            self.arc.set_state("responding")
+            self._status_lbl.setText("●  PROCESSING...")
+            self._status_lbl.setStyleSheet("color:#FF9500;background:transparent;")
+            self._t0 = datetime.now()
         else:
-            self.char_count.setStyleSheet("color: rgba(0,212,255,70);")
+            self.typing.stop()
+            self.arc.set_state("idle")
+            self._status_lbl.setText("●  SYSTEM ONLINE")
+            self._status_lbl.setStyleSheet("color:#00FF88;background:transparent;")
+            self._t0 = None
 
-    def _set_thinking(self, thinking):
-        self.send_btn.setEnabled(not thinking)
-        self.input_field.setEnabled(not thinking)
-        if thinking:
-            self.typing_indicator.start()
-            self.arc_reactor.set_state("responding")
-            self.status_label.setText("● PROCESSING...")
-            self.status_label.setStyleSheet("color: #FF9500; letter-spacing: 2px; font-weight: bold;")
-        else:
-            self.typing_indicator.stop()
-            self.arc_reactor.set_state("idle")
-            self.status_label.setText("● SYSTEM ONLINE")
-            self.status_label.setStyleSheet("color: #00FF88; letter-spacing: 2px; font-weight: bold;")
-
+    # FIXED: Pass is_first flag for faster first response
     def _send(self):
-        text = self.input_field.text().strip()
+        text = self.input.text().strip()
         if not text or (self.worker and self.worker.isRunning()):
             return
-
-        self.input_field.clear()
+        self.input.clear()
         self._add_bubble(text, is_user=True)
         self.conversation_history.append(f"User: {text}")
-
         if text.lower() in ["exit", "quit", "stop"]:
             self._add_bubble("Shutting down. Until next time.", is_user=False)
             return
-
         self._set_thinking(True)
-        realtime = needs_realtime(text.lower())
+        use_news = needs_realtime(text.lower())
+        self.current_bubble = self._add_bubble(
+            "⟳ Fetching latest news..." if use_news else "", is_user=False)
 
-        self.current_bubble = self._add_bubble("", is_user=False)
-        self.worker = JarvisWorker(text, list(self.conversation_history), use_news=realtime)
-        self.worker.token_received.connect(self._on_token)
+        # FIXED: Pass is_first flag for faster first response
+        is_first = len(self.conversation_history) <= 2
+
+        self.worker = JarvisWorker(
+            text,
+            list(self.conversation_history),
+            use_news=use_news,
+            is_first=is_first,
+            model_ready=self._model_ready,
+        )
+        self.worker.token_received.connect(self._queue_stream_text)
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
 
-    def _on_token(self, token):
-        if self.current_bubble:
-            self.current_bubble.append_text(token)
-            self._scroll_to_bottom()
-
-    def _on_finished(self, full_response):
-        self.conversation_history.append(f"Jarvis: {full_response}")
+    def _on_finished(self, resp):
+        self._flush_stream_buffer()
+        # Always set the full response on the bubble — guards against any tokens
+        # that were dropped or not yet flushed from the stream buffer.
+        if self.current_bubble and resp:
+            if isinstance(self.current_bubble.label, QTextEdit):
+                self.current_bubble.label.setPlainText(resp)
+                # Defer resize so Qt has laid out the document first
+                QTimer.singleShot(0, self.current_bubble._resize_label)
+            else:
+                self.current_bubble.label.setText(resp)
+            self.current_bubble._full = resp
+            QTimer.singleShot(10, lambda: self._scroll.verticalScrollBar().setValue(
+                self._scroll.verticalScrollBar().maximum()))
+        self.conversation_history.append(f"Jarvis: {resp}")
         if len(self.conversation_history) > 40:
             self.conversation_history = self.conversation_history[-40:]
         if self.conversation_history and not self._deleted:
             self.current_filename = save_chat(self.conversation_history, self.current_filename)
-            self.history_panel.refresh()
+            self.hist_widget.refresh()
         self._deleted = False
         self._set_thinking(False)
-        self.input_field.setFocus()
+        self.input.setFocus()
 
-    def _on_error(self, error_msg):
+    def _on_error(self, msg):
+        self._flush_stream_buffer()
         if self.current_bubble:
-            self.current_bubble.append_text(f"\nERROR: {error_msg}")
+            self.current_bubble.append_text(f"\nERROR: {msg}")
         self._set_thinking(False)
 
     def _save_chat(self):
         if not self.conversation_history:
             return
         self.current_filename = save_chat(self.conversation_history, self.current_filename)
-        self.history_panel.refresh()
+        self.hist_widget.refresh()
 
     def _new_chat(self):
         if self.conversation_history:
-            self.current_filename = save_chat(self.conversation_history, self.current_filename)
-            self.history_panel.refresh()
+            save_chat(self.conversation_history, self.current_filename)
+            self.hist_widget.refresh()
         self.conversation_history.clear()
         self.current_filename = None
-        while self.chat_layout.count() > 1:
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._greet()
+        self._clear_bubbles()
+        self._add_bubble("New session started. How may I assist you?", is_user=False)
 
     def _load_chat(self, filename):
         if self.conversation_history:
             save_chat(self.conversation_history, self.current_filename)
-            self.history_panel.refresh()
         try:
-            messages = load_chat(filename)
-            self.conversation_history = messages
+            msgs = load_chat(filename)
+            self.conversation_history = msgs
             self.current_filename = filename
-            while self.chat_layout.count() > 1:
-                item = self.chat_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            for msg in messages:
-                if msg.startswith("User: "):
-                    self._add_bubble(msg[6:], is_user=True)
-                elif msg.startswith("Jarvis: "):
-                    self._add_bubble(msg[8:], is_user=False)
+            self._clear_bubbles()
+            bubbles = []
+            for m in msgs:
+                if m.startswith("User: "):
+                    bubbles.append(self._add_bubble(m[6:], is_user=True))
+                elif m.startswith("Jarvis: "):
+                    bubbles.append(self._add_bubble(m[8:], is_user=False))
+            # Defer resize so all bubbles are laid out before sizing
+            def _resize_all():
+                for b in bubbles:
+                    if b and not b.is_user:
+                        b._resize_label()
+            QTimer.singleShot(50, _resize_all)
         except Exception as e:
-            self._add_bubble(f"Failed to load chat: {e}", is_user=False)
+            self._add_bubble(f"Failed to load: {e}", is_user=False)
 
-    def _delete_chat(self, filename):
-        delete_chat(filename)
-        if self.current_filename == filename:
-            self._deleted = True
-            self.current_filename = None
+    def _delete_history_chat(self, filename):
+        # If the deleted chat is the currently active one, clear the view
+        if filename == self.current_filename:
             self.conversation_history.clear()
-            while self.chat_layout.count() > 1:
-                item = self.chat_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            self._add_bubble("Chat deleted. Starting fresh.", is_user=False)
-        self.history_panel.refresh()
+            self.current_filename = None
+            self._deleted = True
+            self._clear_bubbles()
+            self._add_bubble("Chat deleted. Start a new conversation.", is_user=False)
+        delete_chat(filename)
+        self.hist_widget.refresh()
 
     def _clear_chat(self):
         self.conversation_history.clear()
         self.current_filename = None
+        self._clear_bubbles()
+        self._add_bubble("Memory cleared. Systems reset.", is_user=False)
+
+    def _clear_bubbles(self):
         while self.chat_layout.count() > 1:
             item = self.chat_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self._add_bubble("MEMORY WIPED. Systems reset.", is_user=False)
 
-    def _open_voice_chat(self):
-        self.voice_chat_overlay = VoiceChatOverlay(self)
-        self.voice_chat_overlay.transcript_ready.connect(self._on_voice_chat_transcript)
-        self.voice_chat_overlay.show()
+    def _open_voice(self):
+        self._voice_status_lbl.setText("Listening...")
+        self._voice_wave.set_active(True)
+        self._voice_overlay = VoiceInterface(self)
+        self._voice_overlay.transcript_ready.connect(self._on_voice_transcript)
+        self._voice_overlay.destroyed.connect(self._on_voice_closed)
+        self._voice_overlay.showMaximized()
 
-    def _on_voice_chat_transcript(self, user_text, jarvis_text):
+    def _on_voice_closed(self, _=None):
+        self._voice_status_lbl.setText("Idle...")
+        self._voice_wave.set_active(False)
+
+    def _on_voice_transcript(self, user_text, jarvis_text):
         self.conversation_history.append(f"User: {user_text}")
         self.conversation_history.append(f"Jarvis: {jarvis_text}")
         self._add_bubble(user_text, is_user=True)
         self._add_bubble(jarvis_text, is_user=False)
         self.current_filename = save_chat(self.conversation_history, self.current_filename)
-        self.history_panel.refresh()
+        self.hist_widget.refresh()
 
-    def closeEvent(self, event):
+    def on_close(self):
         if self.conversation_history:
             save_chat(self.conversation_history, self.current_filename)
+
+class VoiceInterface(QWidget):
+    transcript_ready = pyqtSignal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setStyleSheet("background:#02060E;")
+        self._state = "idle"
+        self._last_user = ""
+        self._last_jarvis = ""
+        self.voice_worker = None
+        self.tts_worker = None
+        self.llm_worker = None
+        self._sq = None
+        self._tts_stop = None
+        self._muted = threading.Event()
+        self._auto_listen = True
+        self.conv_history = list(parent.conversation_history) if parent and hasattr(parent, "conversation_history") else []
+        self._build()
+        QTimer.singleShot(150, self._start_listening)
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        topbar = QWidget()
+        topbar.setFixedHeight(48)
+        topbar.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 rgba(0,10,30,240), stop:1 rgba(0,6,20,220));"
+            "border-bottom:1px solid rgba(0,150,200,80);")
+        tbl = QHBoxLayout(topbar)
+        tbl.setContentsMargins(14, 0, 14, 0)
+        tbl.setSpacing(10)
+
+        center_col = QVBoxLayout()
+        center_col.setSpacing(0)
+        center_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = QLabel("JARVIS")
+        title.setFont(_orbitron(16, True))
+        title.setStyleSheet("color:#00D4FF;background:transparent;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub = QLabel("VOICE INTERFACE")
+        sub.setFont(_mono(8))
+        sub.setStyleSheet("color:rgba(0,180,220,120);background:transparent;")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center_col.addWidget(title)
+        center_col.addWidget(sub)
+        tbl.addStretch()
+        tbl.addLayout(center_col)
+        tbl.addStretch()
+
+        self._top_clock = QLabel()
+        self._top_clock.setFont(_mono(12, True))
+        self._top_clock.setStyleSheet("color:#00D4FF;background:transparent;")
+        self._top_date = QLabel()
+        self._top_date.setFont(_mono(7))
+        self._top_date.setStyleSheet("color:rgba(0,180,220,140);background:transparent;")
+        clock_col = QVBoxLayout()
+        clock_col.setSpacing(0)
+        clock_col.setAlignment(Qt.AlignmentFlag.AlignRight)
+        clock_col.addWidget(self._top_clock)
+        clock_col.addWidget(self._top_date)
+        tbl.addLayout(clock_col)
+
+        for lbl_txt, act in [("─", ""), ("□", ""), ("✕", "close")]:
+            b = QPushButton(lbl_txt)
+            b.setFixedSize(30, 30)
+            b.setStyleSheet(
+                "QPushButton{background:transparent;color:rgba(0,180,220,150);"
+                "border:none;font-size:13px;}"
+                "QPushButton:hover{color:#00D4FF;}")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            if act == "close":
+                b.clicked.connect(self.close)
+            tbl.addWidget(b)
+        root.addWidget(topbar)
+        t_clock2 = QTimer(self)
+        t_clock2.timeout.connect(self._tick_clock)
+        t_clock2.start(1000)
+        self._tick_clock()
+
+        main = QHBoxLayout()
+        main.setContentsMargins(10, 8, 10, 8)
+        main.setSpacing(10)
+
+        left = QVBoxLayout()
+        left.setSpacing(8)
+
+        vc_frame = QFrame()
+        vc_frame.setFixedWidth(230)
+        vc_frame.setStyleSheet(PANEL_STYLE)
+        vcf = QVBoxLayout(vc_frame)
+        vcf.setContentsMargins(12, 10, 12, 10)
+        vcf.setSpacing(6)
+        vcf.addWidget(section_header("VOICE CHAT"))
+        self._vc_status = _label("LISTENING...", 9, "rgba(0,212,255,200)", bold=True)
+        self._vc_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vcf.addWidget(self._vc_status)
+
+        wave_mic = QHBoxLayout()
+        wave_mic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vc_wave_left = _MiniWaveform()
+        self._vc_wave_left.setFixedSize(60, 30)
+        self._vc_wave_left.set_active(True)
+        wave_mic.addWidget(self._vc_wave_left)
+        mic_icon = QLabel("🎤")
+        mic_icon.setFont(QFont("", 24))
+        mic_icon.setStyleSheet("color:rgba(0,212,255,180);background:transparent;")
+        wave_mic.addWidget(mic_icon)
+        self._vc_wave_right = _MiniWaveform()
+        self._vc_wave_right.setFixedSize(60, 30)
+        self._vc_wave_right.set_active(True)
+        wave_mic.addWidget(self._vc_wave_right)
+        vcf.addLayout(wave_mic)
+
+        self._vc_prompt = _label("I'm listening. Go ahead.", 8, "rgba(0,180,220,150)")
+        self._vc_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vcf.addWidget(self._vc_prompt)
+        left.addWidget(vc_frame)
+
+        vi_frame = QFrame()
+        vi_frame.setFixedWidth(230)
+        vi_frame.setStyleSheet(PANEL_STYLE)
+        vif = QVBoxLayout(vi_frame)
+        vif.setContentsMargins(12, 10, 12, 10)
+        vif.setSpacing(6)
+        vif.addWidget(section_header("VOICE INPUT"))
+        vi_row = QHBoxLayout()
+        self._mic_ring = CircularGauge(78, "MIC\nLEVEL", 85)
+        self._mic_ring.setFixedSize(85, 85)
+        vi_row.addWidget(self._mic_ring)
+
+        vbar = VerticalBarMeter(78)
+        vbar.setFixedWidth(20)
+        vi_row.addWidget(vbar)
+
+        lvl_col = QVBoxLayout()
+        lvl_col.setSpacing(2)
+        for lvl in [100, 75, 50, 25, 0]:
+            lvl_col.addWidget(_label(str(lvl), 6, "rgba(0,150,200,80)"))
+        vi_row.addLayout(lvl_col)
+        vif.addLayout(vi_row)
+
+        noise_row = QHBoxLayout()
+        noise_row.addWidget(_label("≈  Noise Reduction:", 7, "rgba(0,150,200,120)"))
+        noise_row.addWidget(_label("ON", 7, "#00FF88", bold=True))
+        vif.addLayout(noise_row)
+        left.addWidget(vi_frame)
+
+        vs_frame = QFrame()
+        vs_frame.setFixedWidth(230)
+        vs_frame.setStyleSheet(PANEL_STYLE)
+        vsf = QVBoxLayout(vs_frame)
+        vsf.setContentsMargins(12, 10, 12, 10)
+        vsf.setSpacing(4)
+        vsf.addWidget(section_header("VOICE SETTINGS"))
+        for setting, val in [("Sensitivity", 75), ("Noise Filter", 60)]:
+            row = QHBoxLayout()
+            row.addWidget(_label(setting, 7, "rgba(0,160,200,140)"))
+            sl = QSlider(Qt.Orientation.Horizontal)
+            sl.setRange(0, 100)
+            sl.setValue(val)
+            sl.setFixedHeight(12)
+            sl.setStyleSheet("""
+                QSlider::groove:horizontal{height:3px;background:rgba(0,60,100,150);border-radius:1px;}
+                QSlider::handle:horizontal{width:10px;height:10px;background:#00D4FF;border-radius:5px;margin:-3px 0;}
+                QSlider::sub-page:horizontal{background:rgba(0,180,220,200);border-radius:1px;}""")
+            row.addWidget(sl)
+            row.addWidget(_label(f"{val}%", 7, "rgba(0,212,255,180)"))
+            vsf.addLayout(row)
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(_label("Auto Gain", 7, "rgba(0,160,200,140)"))
+        auto_row.addStretch()
+        auto_row.addWidget(_label("ON", 7, "#00FF88", bold=True))
+        vsf.addLayout(auto_row)
+        left.addWidget(vs_frame)
+
+        cmd_frame = QFrame()
+        cmd_frame.setFixedWidth(230)
+        cmd_frame.setStyleSheet(PANEL_STYLE)
+        cmdf = QVBoxLayout(cmd_frame)
+        cmdf.setContentsMargins(12, 10, 12, 10)
+        cmdf.setSpacing(4)
+        cmdf.addWidget(section_header("VOICE COMMANDS"))
+        for icon, cmd, slot in [
+            ("🎤", "Start Listening", self._start_listening),
+            ("⏹", "Stop Listening", self._stop_all),
+            ("⎘", "Switch to Text Chat", self.close),
+            ("✕", "Exit Voice Mode", self.close),
+        ]:
+            btn = QPushButton(f"  {icon}  {cmd}")
+            btn.setFixedHeight(26)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFont(_mono(8))
+            btn.setStyleSheet(
+                "QPushButton{background:transparent;color:rgba(0,160,210,150);"
+                "border:none;text-align:left;}"
+                "QPushButton:hover{color:#00D4FF;background:rgba(0,212,255,8);}")
+            btn.clicked.connect(slot)
+            cmdf.addWidget(btn)
+        left.addWidget(cmd_frame)
+        left.addStretch()
+        main.addLayout(left)
+
+        center = QVBoxLayout()
+        center.setSpacing(8)
+
+        self.waveform = WaveformDisplay(height=90)
+        center.addWidget(self.waveform)
+
+        arc_row = QHBoxLayout()
+
+        listen_col = QVBoxLayout()
+        listen_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._listen_lbl = _label("LISTENING", 10, "rgba(0,212,255,200)", bold=True)
+        self._listen_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        listen_col.addWidget(self._listen_lbl)
+        self._listen_wave = _MiniWaveform()
+        self._listen_wave.setFixedSize(70, 24)
+        listen_col.addWidget(self._listen_wave)
+        arc_row.addLayout(listen_col)
+
+        self.main_arc = ArcReactor(400)
+        self.main_arc.setFixedSize(400, 400)
+        arc_row.addWidget(self.main_arc)
+
+        speak_col = QVBoxLayout()
+        speak_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._speak_lbl = _label("SPEAKING", 10, "rgba(0,212,255,200)", bold=True)
+        self._speak_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        speak_col.addWidget(self._speak_lbl)
+        self._speak_wave = _MiniWaveform()
+        self._speak_wave.setFixedSize(70, 24)
+        speak_col.addWidget(self._speak_wave)
+        arc_row.addLayout(speak_col)
+        center.addLayout(arc_row)
+
+        self._proc_lbl = _label("PROCESSING", 10, "rgba(0,180,220,180)", bold=True)
+        self._proc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center.addWidget(self._proc_lbl)
+        dots_lbl = _label("• • •", 9, "rgba(0,180,220,120)")
+        dots_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center.addWidget(dots_lbl)
+
+        self.transcript_lbl = QLabel("Tap SPEAK to begin...")
+        self.transcript_lbl.setFont(_mono(9))
+        self.transcript_lbl.setWordWrap(True)
+        self.transcript_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transcript_lbl.setMaximumHeight(50)
+        self.transcript_lbl.setStyleSheet(
+            "color:rgba(0,200,240,160);background:transparent;padding:0 20px;")
+        center.addWidget(self.transcript_lbl)
+
+        eq_box = QFrame()
+        eq_box.setStyleSheet(
+            "QFrame{background:rgba(0,8,22,180);border:1px solid rgba(0,130,180,60);border-radius:4px;}")
+        eq_lay = QVBoxLayout(eq_box)
+        eq_lay.setContentsMargins(8, 6, 8, 6)
+        eq_lay.setSpacing(4)
+        eq_lay.addWidget(_label("EQUALIZER", 7, "rgba(0,180,220,160)", bold=True))
+        self.equalizer = Equalizer()
+        self.equalizer.setFixedHeight(90)
+        eq_lay.addWidget(self.equalizer)
+        center.addWidget(eq_box)
+
+        rp_box = QFrame()
+        rp_box.setStyleSheet(
+            "QFrame{background:rgba(0,8,22,180);border:1px solid rgba(0,130,180,60);border-radius:4px;}")
+        rp_lay = QVBoxLayout(rp_box)
+        rp_lay.setContentsMargins(8, 4, 8, 4)
+        rp_lay.setSpacing(2)
+        rp_lay.addWidget(_label("REACTOR PULSE", 7, "rgba(0,180,220,160)", bold=True))
+        self.reactor_pulse = ReactorPulse()
+        self.reactor_pulse.setFixedHeight(50)
+        rp_lay.addWidget(self.reactor_pulse)
+        center.addWidget(rp_box)
+        main.addLayout(center, stretch=1)
+
+        right = QVBoxLayout()
+        right.setSpacing(8)
+
+        cs_frame = QFrame()
+        cs_frame.setFixedWidth(230)
+        cs_frame.setStyleSheet(PANEL_STYLE)
+        csf = QVBoxLayout(cs_frame)
+        csf.setContentsMargins(12, 10, 12, 10)
+        csf.setSpacing(6)
+        csf.addWidget(section_header("CONVERSATION STATUS"))
+        cs_row = QHBoxLayout()
+        mini_arc2 = ArcReactor(65)
+        mini_arc2.setFixedSize(65, 65)
+        cs_row.addWidget(mini_arc2)
+        cs_info = QVBoxLayout()
+        cs_info.setSpacing(3)
+        for k, v in [("MODEL +", OLLAMA_MODEL), ("RESPONSE TIME", "0.85 sec"), ("TOKENS", "512")]:
+            r2 = QHBoxLayout()
+            r2.addWidget(_label(k, 7, "rgba(0,140,180,120)"))
+            r2.addWidget(_label(v, 7, "rgba(0,212,255,200)"))
+            cs_info.addLayout(r2)
+        self._conn_lbl = _label("●  CONNECTED", 8, "#00FF88", bold=True)
+        cs_info.addWidget(self._conn_lbl)
+        cs_row.addLayout(cs_info)
+        csf.addLayout(cs_row)
+        right.addWidget(cs_frame)
+
+        ao_frame = QFrame()
+        ao_frame.setFixedWidth(230)
+        ao_frame.setStyleSheet(PANEL_STYLE)
+        aof = QVBoxLayout(ao_frame)
+        aof.setContentsMargins(12, 10, 12, 10)
+        aof.setSpacing(6)
+        aof.addWidget(section_header("AUDIO OUTPUT"))
+        ao_row = QHBoxLayout()
+        self._spk_ring = CircularGauge(65, "SPEAKER\nLEVEL", 80)
+        self._spk_ring.setFixedSize(80, 80)
+        ao_row.addWidget(self._spk_ring)
+
+        spk_bar = VerticalBarMeter(65)
+        spk_bar.setFixedWidth(20)
+        ao_row.addWidget(spk_bar)
+
+        for lvl in [100, 75, 50, 25, 0]:
+            ao_row.addWidget(_label(str(lvl), 6, "rgba(0,150,200,80)"))
+        aof.addLayout(ao_row)
+        aof.addWidget(_label("🔊  Output Device: Built-in Output", 7, "rgba(0,150,200,120)"))
+        right.addWidget(ao_frame)
+
+        state_frame = QFrame()
+        state_frame.setFixedWidth(230)
+        state_frame.setStyleSheet(PANEL_STYLE)
+        stf = QVBoxLayout(state_frame)
+        stf.setContentsMargins(12, 10, 12, 10)
+        stf.setSpacing(6)
+        stf.addWidget(section_header("CURRENT STATE"))
+        st_row = QHBoxLayout()
+        self._state_dot = QLabel("●")
+        self._state_dot.setFont(QFont("", 24))
+        self._state_dot.setStyleSheet("color:#00D4FF;background:transparent;")
+        st_row.addWidget(self._state_dot)
+        st_col = QVBoxLayout()
+        st_col.setSpacing(2)
+        self._state_lbl = _label("IDLE", 12, "#00D4FF", bold=True)
+        self._state_sub = _label("Tap SPEAK to begin...", 7, "rgba(0,180,220,130)")
+        st_col.addWidget(self._state_lbl)
+        st_col.addWidget(self._state_sub)
+        st_row.addLayout(st_col)
+        stf.addLayout(st_row)
+
+        dot_row = QHBoxLayout()
+        dot_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._state_dots = []
+        for i in range(8):
+            d = QLabel("○")
+            d.setFont(_mono(8))
+            d.setStyleSheet("color:rgba(0,150,200,80);background:transparent;")
+            dot_row.addWidget(d)
+            self._state_dots.append(d)
+        stf.addLayout(dot_row)
+        right.addWidget(state_frame)
+
+        ctrl_frame = QFrame()
+        ctrl_frame.setFixedWidth(230)
+        ctrl_frame.setStyleSheet(PANEL_STYLE)
+        ctrlf = QVBoxLayout(ctrl_frame)
+        ctrlf.setContentsMargins(12, 10, 12, 10)
+        ctrlf.setSpacing(8)
+        ctrlf.addWidget(section_header("VOICE CONTROLS"))
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ctrl_row.setSpacing(12)
+
+        speak_col = QVBoxLayout()
+        speak_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        speak_col.setSpacing(4)
+        self._speak_btn = QPushButton("🎤")
+        self._speak_btn.setFixedSize(52, 52)
+        self._speak_btn.setFont(QFont("", 18))
+        self._speak_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._speak_btn.setStyleSheet(
+            "QPushButton{background:rgba(0,212,255,25);color:#00D4FF;"
+            "border:2px solid rgba(0,212,255,160);border-radius:26px;}"
+            "QPushButton:hover{background:rgba(0,212,255,50);}"
+            "QPushButton:disabled{background:rgba(0,30,60,100);color:rgba(0,180,220,60);"
+            "border-color:rgba(0,150,200,80);}")
+        self._speak_btn.clicked.connect(self._start_listening)
+        speak_col.addWidget(self._speak_btn)
+        speak_col.addWidget(_label("SPEAK", 7, "#00D4FF"))
+        ctrl_row.addLayout(speak_col)
+
+        mute_col = QVBoxLayout()
+        mute_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mute_col.setSpacing(4)
+        self._mute_btn = QPushButton("🔇")
+        self._mute_btn.setFixedSize(52, 52)
+        self._mute_btn.setFont(QFont("", 18))
+        self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mute_btn.setStyleSheet(
+            "QPushButton{background:rgba(0,212,255,12);color:rgba(0,200,220,160);"
+            "border:2px solid rgba(0,180,220,100);border-radius:26px;}"
+            "QPushButton:hover{background:rgba(0,212,255,30);}")
+        self._mute_btn.clicked.connect(self._toggle_mute)
+        mute_col.addWidget(self._mute_btn)
+        mute_col.addWidget(_label("MUTE", 7, "rgba(0,200,220,160)"))
+        ctrl_row.addLayout(mute_col)
+
+        stop_col = QVBoxLayout()
+        stop_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        stop_col.setSpacing(4)
+        stop_btn = QPushButton("⏹")
+        stop_btn.setFixedSize(52, 52)
+        stop_btn.setFont(QFont("", 18))
+        stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop_btn.setStyleSheet(
+            "QPushButton{background:rgba(255,180,0,20);color:#FFB800;"
+            "border:2px solid rgba(255,180,0,120);border-radius:26px;}"
+            "QPushButton:hover{background:rgba(255,180,0,50);}")
+        stop_btn.clicked.connect(self._stop_all)
+        stop_col.addWidget(stop_btn)
+        stop_col.addWidget(_label("STOP", 7, "#FFB800"))
+        ctrl_row.addLayout(stop_col)
+
+        exit_col = QVBoxLayout()
+        exit_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        exit_col.setSpacing(4)
+        exit_btn = QPushButton("✕")
+        exit_btn.setFixedSize(52, 52)
+        exit_btn.setFont(QFont("", 18))
+        exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exit_btn.setStyleSheet(
+            "QPushButton{background:rgba(255,60,60,20);color:rgba(255,120,120,200);"
+            "border:2px solid rgba(255,60,60,120);border-radius:26px;}"
+            "QPushButton:hover{background:rgba(255,60,60,50);}")
+        exit_btn.clicked.connect(self.close)
+        exit_col.addWidget(exit_btn)
+        exit_col.addWidget(_label("EXIT", 7, "rgba(255,100,100,200)"))
+        ctrl_row.addLayout(exit_col)
+
+        ctrlf.addLayout(ctrl_row)
+        right.addWidget(ctrl_frame)
+        right.addStretch()
+        main.addLayout(right)
+        root.addLayout(main, stretch=1)
+
+        bot = QWidget()
+        bot.setFixedHeight(26)
+        bot.setStyleSheet(
+            "background:rgba(0,6,18,220);border-top:1px solid rgba(0,100,160,60);")
+        bl = QHBoxLayout(bot)
+        bl.setContentsMargins(14, 0, 14, 0)
+        bl.addStretch()
+        bl.addWidget(_label(f"JARVIS OS {OS_VERSION}", 7, "rgba(0,150,200,100)"))
+        bl.addStretch()
+        root.addWidget(bot)
+
+        self._speak_timer = QTimer(self)
+        self._speak_timer.timeout.connect(self._animate_speak_dots)
+        self._speak_dot_idx = 0
+        self._speak_timer.start(400)
+
+    def _tick_clock(self):
+        now = datetime.now()
+        self._top_clock.setText(now.strftime("%I:%M:%S %p"))
+        self._top_date.setText(now.strftime("%A, %B %d, %Y"))
+
+    def _animate_speak_dots(self):
+        self._speak_dot_idx = (self._speak_dot_idx + 1) % 8
+        for i, d in enumerate(self._state_dots):
+            if i <= self._speak_dot_idx:
+                d.setText("●")
+                d.setStyleSheet("color:rgba(0,212,255,200);background:transparent;")
+            else:
+                d.setText("○")
+                d.setStyleSheet("color:rgba(0,150,200,60);background:transparent;")
+
+    def _set_state(self, state):
+        self._state = state
+        self.main_arc.set_state(state)
+        self._vc_wave_left.set_active(state == "listening")
+        self._vc_wave_right.set_active(state == "listening")
+        self.waveform.set_active(state == "listening")
+        self.equalizer.set_active(state == "listening" or state == "responding")
+        if state == "listening":
+            self._state_lbl.setText("LISTENING")
+            self._state_lbl.setStyleSheet("color:#00FF88;background:transparent;")
+            self._state_dot.setStyleSheet("color:#00FF88;background:transparent;")
+            self._state_sub.setText("Speak now...")
+            self._proc_lbl.setText("LISTENING")
+            self._listen_lbl.setStyleSheet("color:#00FF88;background:transparent;")
+            self._speak_lbl.setStyleSheet("color:rgba(0,212,255,200);background:transparent;")
+            self._vc_status.setText("LISTENING...")
+            self._vc_prompt.setText("I'm listening. Go ahead.")
+        elif state == "responding":
+            self._state_lbl.setText("PROCESSING")
+            self._state_lbl.setStyleSheet("color:#00D4FF;background:transparent;")
+            self._state_dot.setStyleSheet("color:#00D4FF;background:transparent;")
+            self._state_sub.setText("Jarvis is thinking...")
+            self._proc_lbl.setText("PROCESSING")
+            self._vc_status.setText("PROCESSING...")
+        else:
+            self._state_lbl.setText("IDLE")
+            self._state_lbl.setStyleSheet("color:#00D4FF;background:transparent;")
+            self._state_dot.setStyleSheet("color:#00D4FF;background:transparent;")
+            self._state_sub.setText("Tap SPEAK to begin...")
+            self._proc_lbl.setText("STANDBY")
+            self._vc_status.setText("Idle...")
+            self._listen_lbl.setStyleSheet("color:rgba(0,212,255,200);background:transparent;")
+            self._speak_lbl.setStyleSheet("color:rgba(0,212,255,200);background:transparent;")
+
+    def _toggle_mute(self):
+        if self._muted.is_set():
+            self._muted.clear()
+            if self._mute_btn:
+                self._mute_btn.setText("🔇")
+                self._mute_btn.setStyleSheet(
+                    "QPushButton{background:rgba(0,212,255,12);color:rgba(0,200,220,160);"
+                    "border:2px solid rgba(0,180,220,100);border-radius:26px;}"
+                    "QPushButton:hover{background:rgba(0,212,255,30);}")
+        else:
+            self._muted.set()
+            if self._mute_btn:
+                self._mute_btn.setText("🔊")
+                self._mute_btn.setStyleSheet(
+                    "QPushButton{background:rgba(255,180,0,30);color:#FFB800;"
+                    "border:2px solid rgba(255,180,0,160);border-radius:26px;}"
+                    "QPushButton:hover{background:rgba(255,180,0,50);}")
+
+    def _start_listening(self):
+        if self.voice_worker and self.voice_worker.isRunning():
+            return
+        self._auto_listen = True
+        self._set_state("listening")
+        if self._speak_btn:
+            self._speak_btn.setEnabled(False)
+        self.voice_worker = VoiceWorker()
+        self.voice_worker.text_received.connect(self._on_speech)
+        self.voice_worker.error.connect(self._on_err)
+        self.voice_worker.level_update.connect(self._mic_ring.set_value)
+        self.voice_worker.start()
+
+    def _on_speech(self, text):
+        self._last_user = text
+        self.transcript_lbl.setText(f"You: {text}")
+        self._set_state("responding")
+        self.conv_history.append(f"User: {text}")
+        self._sq = queue.Queue()
+        self._tts_stop = threading.Event()
+        self.tts_worker = TTSWorker(self._sq, self._tts_stop, self._muted)
+        self.tts_worker.finished_speaking.connect(self._on_tts_done)
+        self.tts_worker.start()
+        self.llm_worker = VoiceLLMWorker(text, list(self.conv_history),
+                                         use_news=needs_realtime(text.lower()))
+        self.llm_worker.sentence_ready.connect(self._on_sentence)
+        self.llm_worker.finished.connect(self._on_llm_done)
+        self.llm_worker.error.connect(lambda e: self.transcript_lbl.setText(f"Error: {e}"))
+        self.llm_worker.start()
+
+    def _on_sentence(self, s):
+        if self._sq:
+            self._sq.put(s)
+        cur = self.transcript_lbl.text()
+        if cur.startswith("You:"):
+            self.transcript_lbl.setText(f"Jarvis: {s}")
+        else:
+            self.transcript_lbl.setText((cur + " " + s)[-120:])
+
+    def _on_llm_done(self, resp):
+        self._last_jarvis = resp
+        self.conv_history.append(f"Jarvis: {resp}")
+        if self._sq:
+            self._sq.put(None)
+        self.transcript_ready.emit(self._last_user, resp)
+
+    def _on_tts_done(self):
+        self._set_state("idle")
+        if self._speak_btn:
+            self._speak_btn.setEnabled(True)
+        if self._auto_listen and self.isVisible():
+            QTimer.singleShot(100, self._start_listening)
+
+    def _on_err(self, err):
+        self.transcript_lbl.setText(f"Error: {err}")
+        self._set_state("idle")
+        if self._speak_btn:
+            self._speak_btn.setEnabled(True)
+        if self._auto_listen and self.isVisible():
+            QTimer.singleShot(2000, self._start_listening)
+
+    def _stop_all(self):
+        self._auto_listen = False
+        if self.voice_worker and self.voice_worker.isRunning():
+            self.voice_worker.stop_recording()
+        if self._tts_stop:
+            self._tts_stop.set()
+        self._set_state("idle")
+        if self._speak_btn:
+            self._speak_btn.setEnabled(True)
+
+    def closeEvent(self, event):
+        self._auto_listen = False
+        self._stop_all()
         event.accept()
 
+# ═══════════════════════════════════════════════════════════
+#  STARTUP SCREEN
+# ═══════════════════════════════════════════════════════════
+BOOT_ITEMS = [
+    "Initializing JARVIS OS",
+    "Loading Core Modules",
+    "Establishing Connections",
+    "Calibrating Systems",
+    "Launching Interface",
+    "System Ready",
+]
 
-# ─────────────────────────────────────────────────────────
+SYSTEM_CHECKS = [
+    "POWER SYSTEMS",
+    "MEMORY MODULES",
+    "NETWORK CONNECTION",
+    "AUDIO SYSTEMS",
+    "VISUAL INTERFACE",
+    "AI CORE",
+    "DATABASE",
+    "SECURITY PROTOCOLS",
+]
+
+class StartupScreen(QWidget):
+    boot_complete = pyqtSignal()
+    _speech_done  = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Force hardware-accelerated compositing — prevents macOS compositor flush stalls
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background-color:#02060E;")
+        import time as _time
+        self._t = 0.0
+        self._last_ts = _time.perf_counter()
+        self._arc_angle = 0.0
+        self._arc_angle2 = 0.0
+        self._arc_pulse = 0.0
+        self._boot_idx = 0
+        self._boot_pct = 0.0
+        self._boot_done = [False] * len(BOOT_ITEMS)
+        self._checks_done = [False] * len(SYSTEM_CHECKS)
+        self._overall_pct = 0.0
+        self._show_welcome = False
+        self._welcome_alpha = 0.0
+        self._finishing = False
+        self._fade_out = 0.0
+        self._spoken = False
+        self._welcome_px = None  # will be built after first showEvent (needs widget size)
+        self._world_dots_bright = QPolygonF()
+        self._world_dots_dim = QPolygonF()
+        self._world_dots_size = (0, 0, 0, 0)
+        self._mem_pct = 0.0
+        self._cpu_pct = 0.0
+        self._net_pct = 0.0
+        self._pwr_pct = 0.0
+        self._model_ready = False   # set by JarvisMainWindow when warmup completes
+        self._anim_done = False     # set when animation wants to finish
+
+        self._build_date = datetime.now().strftime("%Y.%m.%d")  # computed once, not per frame
+        self._hb_noise = [0.0] * 80
+        self._dot_brightness = [i % 3 == 0 for i in range(24)]
+        self._world_dots = [
+            (0.12, 0.4), (0.18, 0.35), (0.14, 0.55), (0.22, 0.6), (0.30, 0.5), (0.28, 0.35),
+            (0.38, 0.38), (0.42, 0.5), (0.48, 0.4), (0.50, 0.55), (0.55, 0.45), (0.58, 0.35),
+            (0.62, 0.5), (0.65, 0.40), (0.70, 0.45), (0.72, 0.35), (0.78, 0.5), (0.82, 0.42),
+            (0.85, 0.55), (0.90, 0.48), (0.92, 0.38), (0.45, 0.70), (0.48, 0.75), (0.52, 0.72),
+        ]
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.start(1000 // 60)  # 60fps for smooth animation
+        self._speech_done.connect(self._begin_finish)
+
+    def _step(self):
+        import time as _time
+        now_ts = _time.perf_counter()
+        dt = min(now_ts - self._last_ts, 0.05)
+        if dt > 0.1:
+            print(f"[FREEZE] {dt*1000:.0f}ms gap at t={self._t:.2f}s")
+        # Skip first 3 frames — lets Qt warm up graphics pipeline before heavy drawing
+        if not hasattr(self, '_frame_count'):
+            self._frame_count = 0
+        self._frame_count += 1
+        if self._frame_count < 4:
+            self._last_ts = now_ts
+            self.update()
+            return
+        dt = min(now_ts - self._last_ts, 0.05)
+        self._last_ts = now_ts
+        self._t += dt
+        t = self._t
+        self._arc_angle = (self._arc_angle + 60 * dt) % 360
+        self._arc_angle2 = (self._arc_angle2 - 38 * dt) % 360
+        self._arc_pulse = (self._arc_pulse + 180 * dt) % 360
+        self._mem_pct = min(72, self._mem_pct + 80 * dt)
+        self._cpu_pct = min(63, self._cpu_pct + 70 * dt)
+        self._net_pct = min(100, self._net_pct + 110 * dt)
+        self._pwr_pct = min(100, self._pwr_pct + 120 * dt)
+        total_items = len(BOOT_ITEMS)
+        total_duration = total_items * 0.55
+        elapsed_for_boot = max(0, t - 0.3)
+        item_t = elapsed_for_boot / 0.55
+        new_boot_idx = min(int(item_t), total_items)
+        for i in range(new_boot_idx):
+            if not self._boot_done[i]:
+                self._boot_done[i] = True
+                check_idx = min(i, len(SYSTEM_CHECKS) - 1)
+                self._checks_done[check_idx] = True
+                # Play sound for each boot item — in background thread to avoid blocking animation
+                if i == 0:
+                    threading.Thread(target=lambda: _play_sound("powerup"), daemon=True).start()
+                elif i == total_items - 1:
+                    pass  # ready sound plays with welcome
+                else:
+                    _name = "scan" if i % 2 == 0 else "tick"
+                    threading.Thread(target=lambda n=_name: _play_sound(n), daemon=True).start()
+        if new_boot_idx < total_items:
+            frac = item_t - int(item_t)
+            self._boot_pct = frac * 100
+        else:
+            self._boot_pct = 100
+        if new_boot_idx >= total_items:
+            for i in range(len(SYSTEM_CHECKS)):
+                self._checks_done[i] = True
+        self._overall_pct = min(100, (elapsed_for_boot / total_duration) * 100)
+        all_done = all(self._boot_done)
+        # Rebuild arc reactor pixmap at 20fps in _step — never blocks paintEvent
+        arc_age = now_ts - getattr(self, '_arc_px_ts', 0)
+        if arc_age > 0.05 and self.width() > 0:
+            w2, h2 = self.width(), self.height()
+            lw2, rw2 = 260, 230
+            arc_size2 = max(min(w2 - lw2 - rw2 - 80, h2 - 160), 200)
+            cx2, cy2 = w2 / 2, h2 / 2
+            R2 = arc_size2 / 2 - 10
+            arc_key2 = (round(cx2), round(cy2), round(R2))
+            # Rebuild into a temp pixmap, swap atomically
+            size2 = int(R2 * 2 + 20)
+            px2 = QPixmap(size2, size2)
+            px2.fill(Qt.GlobalColor.transparent)
+            wp2 = QPainter(px2)
+            wp2.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            lx2, ly2 = R2 + 10, R2 + 10
+            bg2 = QRadialGradient(lx2, ly2, R2)
+            bg2.setColorAt(0,   QColor(0, 25, 50, 230))
+            bg2.setColorAt(0.7, QColor(0, 12, 28, 210))
+            bg2.setColorAt(1,   QColor(0,  5, 15, 180))
+            wp2.setBrush(QBrush(bg2)); wp2.setPen(Qt.PenStyle.NoPen)
+            wp2.drawEllipse(QPointF(lx2, ly2), R2, R2)
+            wp2.setPen(QPen(QColor(15, 30, 45, 240), R2 * 0.10))
+            wp2.setBrush(Qt.BrushStyle.NoBrush)
+            wp2.drawEllipse(QPointF(lx2, ly2), R2 * 0.95, R2 * 0.95)
+            rect88 = QRectF(lx2 - R2*0.88, ly2 - R2*0.88, R2*1.76, R2*1.76)
+            a_span_i = int(((360/16) - 3.5) * 16)
+            for i in range(16):
+                a_start = i * (360/16) + self._arc_angle * 0.2
+                phase = ((i * (360/16) + self._arc_angle) % 360) / 360
+                alpha = int(50 + 160 * abs(math.sin(math.pi * phase)))
+                pen = QPen(QColor(0, alpha//2, alpha, alpha), R2 * 0.065)
+                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                wp2.setPen(pen)
+                wp2.drawArc(rect88, int(a_start * 16), a_span_i)
+            R3_2 = R2 * 0.70
+            for gw, ga in [(R2*0.10,10),(R2*0.06,25),(R2*0.025,80),(R2*0.012,200)]:
+                wp2.setPen(QPen(QColor(0, 180, 255, ga), gw))
+                wp2.setBrush(Qt.BrushStyle.NoBrush)
+                wp2.drawEllipse(QPointF(lx2, ly2), R3_2, R3_2)
+            rect_r3 = QRectF(lx2 - R3_2, ly2 - R3_2, R3_2*2, R3_2*2)
+            for i in range(12):
+                a_start = i * 30 + self._arc_angle
+                bright = (i % 3 == 0)
+                pen = QPen(QColor(200,235,255,220 if bright else 70),
+                           R2*0.020 if bright else R2*0.010)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                wp2.setPen(pen)
+                wp2.drawArc(rect_r3, int(a_start * 16), 7 * 16)
+            R2b = R2 * 0.82
+            for i in range(24):
+                a = math.radians(i * 15 + self._arc_angle2 * 0.15)
+                ca, sa = math.cos(a), math.sin(a)
+                is_major = (i % 4 == 0)
+                r0 = R2b - R2 * (0.065 if is_major else 0.032)
+                wp2.setPen(QPen(QColor(0,200,255,160 if is_major else 50),
+                                1.3 if is_major else 0.6))
+                wp2.drawLine(QPointF(lx2+ca*r0, ly2+sa*r0), QPointF(lx2+ca*R2b, ly2+sa*R2b))
+            for rf, ao, pw_f, ns, ss in [(0.54,self._arc_angle,0.020,10,16),(0.38,self._arc_angle2,0.014,8,22)]:
+                ri = R2 * rf
+                rect_ri = QRectF(lx2-ri, ly2-ri, ri*2, ri*2)
+                pen = QPen(C_CYAN, R2 * pw_f); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                wp2.setPen(pen); wp2.setBrush(Qt.BrushStyle.NoBrush)
+                step2 = 360 / ns
+                for i in range(ns):
+                    wp2.drawArc(rect_ri, int((ao + i*step2) * 16), ss * 16)
+            for rf, a in [(0.48,40),(0.33,25)]:
+                ri = R2 * rf
+                wp2.setPen(QPen(QColor(0,160,210,a),1)); wp2.setBrush(Qt.BrushStyle.NoBrush)
+                wp2.drawEllipse(QPointF(lx2, ly2), ri, ri)
+            pulse_s = 0.72 + 0.28 * math.sin(math.radians(self._arc_pulse))
+            cg2 = QRadialGradient(lx2, ly2, R2 * 0.28 * pulse_s)
+            cg2.setColorAt(0,    QColor(220,245,255,int(210*pulse_s)))
+            cg2.setColorAt(0.18, QColor(0,200,255,  int(180*pulse_s)))
+            cg2.setColorAt(0.5,  QColor(0,140,220,  int(70 *pulse_s)))
+            cg2.setColorAt(1,    QColor(0,0,0,0))
+            wp2.setBrush(QBrush(cg2)); wp2.setPen(Qt.PenStyle.NoPen)
+            wp2.drawEllipse(QPointF(lx2,ly2), R2*0.28*pulse_s, R2*0.28*pulse_s)
+            wp2.setBrush(QBrush(QColor(240,250,255,255)))
+            wp2.setPen(QPen(C_CYAN, 1.5))
+            wp2.drawEllipse(QPointF(lx2,ly2), max(3, R2*0.035), max(3, R2*0.035))
+            wp2.end()
+            self._arc_px     = px2
+            self._arc_px_ox  = int(cx2 - R2 - 10)
+            self._arc_px_oy  = int(cy2 - R2 - 10)
+            self._arc_px_key = arc_key2
+            self._arc_px_ts  = now_ts
+            self._welcome_px = self._build_welcome_pixmap()
+        # Pre-build arc static pixmap on first real frame so paintEvent never stalls on it
+        if not hasattr(self, '_arc_static_key'):
+            w2, h2 = self.width(), self.height()
+            if w2 > 0 and h2 > 0:
+                lw2 = 260
+                rw2 = 230
+                arc_size2 = min(w2 - lw2 - rw2 - 80, h2 - 160)
+                arc_size2 = max(arc_size2, 200)
+                cx2, cy2 = w2 / 2, h2 / 2
+                R2 = arc_size2 / 2 - 10
+                self._arc_static_px, self._arc_static_ox, self._arc_static_oy = \
+                    self._build_arc_static(cx2, cy2, R2)
+                self._arc_static_key = (round(cx2), round(cy2), round(R2))
+        if all_done and not self._show_welcome:
+            preload_done = _KOKORO_PRELOAD_READY or _KOKORO_PRELOAD_FLAG.value == 1
+            if preload_done or self._t > 20:
+                self._show_welcome = True
+            self._show_welcome = True
+        if self._show_welcome:
+            self._welcome_alpha = min(1.0, self._welcome_alpha + 1.5 * dt)
+        if self._show_welcome and not self._spoken and self._welcome_alpha > 0.05:
+            self._spoken = True
+            threading.Thread(target=lambda: _play_sound("ready"), daemon=True).start()
+            def _speak():
+                msg = f"Welcome back, {USER_NAME}. All systems are online."
+                # If preload finished, cache_file exists and speak_with_piper returns instantly
+                cache_file = _cache_key(msg)
+                if not os.path.exists(cache_file):
+                    print("[TTS] Welcome message not cached yet — synthesizing now (may cause brief pause)")
+                import time as _t
+                cache_file = _cache_key(msg)
+                deadline = _t.time() + 8.0
+                while not os.path.exists(cache_file) and _t.time() < deadline:
+                    _t.sleep(0.05)
+                if os.path.exists(cache_file):
+                    _play_audio(cache_file)
+                else:
+                    path = _speak_system_to_file(msg)
+                    if path and path != "__spoken__":
+                        _play_audio(path)
+                self._speech_done.emit()
+            threading.Thread(target=_speak, daemon=True).start()
+        if self._finishing:
+            self._fade_out = min(1.0, self._fade_out + 2.5 * dt)
+        self.update()
+
+    def notify_model_ready(self):
+        """Called by JarvisMainWindow when the warmup completes."""
+        self._model_ready = True
+
+    def _begin_finish(self):
+        self._finishing = True
+        self._anim_done = True
+        QTimer.singleShot(550, self._emit_boot_complete)
+
+    def _emit_boot_complete(self):
+        self._timer.stop()
+        self.boot_complete.emit()
+
+    def _wait_for_model(self):
+        pass  # no longer used
+
+    def paintEvent(self, event):
+        import time as _pt
+        _ps = _pt.perf_counter()
+        _ts = {}
+        def _mark(label):
+            _ts[label] = _pt.perf_counter()
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), C_BG)
+        _mark('start')
+        p.setPen(QPen(QColor(0, 212, 255, 160), 1))
+        p.drawLine(0, 34, w, 34)
+        p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        p.setPen(QPen(QColor(0, 212, 255, 220)))
+        title = "JARVIS SYSTEM STARTUP"
+        tw = p.fontMetrics().horizontalAdvance(title)
+        p.drawText(int(cx - tw / 2), 24, title)
+        p.setPen(QPen(QColor(0, 100, 150, 100), 1))
+        p.drawLine(0, h - 28, w, h - 28)
+        p.setFont(_mono(7))
+        p.setPen(QPen(QColor(0, 150, 200, 120)))
+        p.drawText(14, h - 12, f"JARVIS OS {OS_VERSION}")
+        ver = f"BUILD {self._build_date}"
+        vw = p.fontMetrics().horizontalAdvance(ver)
+        p.drawText(int(cx - vw / 2), h - 12, ver)
+        if self._anim_done and not self._model_ready:
+            status = "LOADING AI MODEL..."
+            p.setPen(QPen(QColor(255, 180, 0, 200)))
+            # Draw prominent center message
+            p.setFont(_orbitron(11, True))
+            wait_alpha = int(160 + 80 * math.sin(self._t * 3))
+            p.setPen(QPen(QColor(255, 180, 0, wait_alpha)))
+            msg = "PREPARING AI MODEL — PLEASE WAIT"
+            mw = p.fontMetrics().horizontalAdvance(msg)
+            p.drawText(int(cx - mw / 2), int(cy + 140), msg)
+            p.setFont(_mono(7))
+        elif self._show_welcome:
+            status = "ONLINE"
+            p.setPen(QPen(QColor(0, 150, 200, 120)))
+        else:
+            status = "INITIALIZING"
+            p.setPen(QPen(QColor(0, 150, 200, 120)))
+        p.drawText(w - 200, h - 12, f"STATUS: {status}")
+        lx, ly = 24, 50
+        lw = 260
+        p.setFont(QFont("Courier New", 22, QFont.Weight.Bold))
+        p.setPen(QPen(QColor(0, 212, 255, 230)))
+        p.drawText(lx, ly + 28, "J.A.R.V.I.S")
+        p.setFont(_mono(7))
+        p.setPen(QPen(QColor(0, 150, 200, 160)))
+        p.drawText(lx, ly + 44, "JUST A RATHER VERY")
+        p.drawText(lx, ly + 57, "INTELLIGENT SYSTEM")
+        box_y = ly + 70
+        _mark("panel_box")
+        self._draw_panel_box(p, lx - 4, box_y, lw, 230)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(lx + 4, box_y + 18, "SYSTEM STATUS")
+        p.setPen(QPen(QColor(0, 150, 200, 80), 0.5))
+        p.drawLine(lx, box_y + 24, lx + lw - 8, box_y + 24)
+        for i, chk in enumerate(SYSTEM_CHECKS):
+            iy = box_y + 36 + i * 23
+            done = self._checks_done[i]
+            p.setFont(_mono(8))
+            p.setPen(QPen(QColor(0, 170, 200, 170 if done else 80)))
+            p.drawText(lx + 4, iy, chk)
+            status = "OK"
+            sc = QColor(0, 255, 136, 200) if done else QColor(0, 150, 200, 80)
+            p.setPen(QPen(sc))
+            p.setFont(_mono(8, True))
+            sw = p.fontMetrics().horizontalAdvance(status)
+            p.drawText(lx + lw - sw - 10, iy, status)
+        diag_y = box_y + 240
+        self._draw_panel_box(p, lx - 4, diag_y, lw, 120)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(lx + 4, diag_y + 18, "DIAGNOSTICS")
+        _mark("heartbeat")
+        self._draw_heartbeat(p, lx + 4, diag_y + 30, lw - 14, 28)
+        p.setFont(_mono(7))
+        p.setPen(QPen(QColor(0, 255, 136, 180)))
+        p.drawText(lx + 4, diag_y + 72, "All systems operational  ✓")
+        p.setPen(QPen(QColor(0, 150, 200, 120)))
+        p.drawText(lx + 4, diag_y + 87, "Diagnostics complete")
+        pbar_x = lx + 4
+        pbar_y = diag_y + 95
+        pbar_w = lw - 14
+        p.setBrush(QBrush(QColor(0, 50, 80, 80)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(pbar_x, pbar_y, pbar_w, 10)
+        filled = int(pbar_w * self._overall_pct / 100)
+        if filled > 0:
+            g = QLinearGradient(pbar_x, 0, pbar_x + pbar_w, 0)
+            g.setColorAt(0, QColor(0, 140, 200, 200))
+            g.setColorAt(1, QColor(0, 212, 255, 255))
+            p.setBrush(QBrush(g))
+            p.drawRect(pbar_x, pbar_y, filled, 10)
+        p.setFont(_mono(7, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(pbar_x + pbar_w - 28, pbar_y + 9, f"{int(self._overall_pct)}%")
+        boot_y = diag_y + 128
+        self._draw_panel_box(p, lx - 4, boot_y, lw, 30 + len(BOOT_ITEMS) * 22)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(lx + 4, boot_y + 18, "BOOT SEQUENCE")
+        for i, item in enumerate(BOOT_ITEMS):
+            iy = boot_y + 32 + i * 22
+            done = self._boot_done[i]
+            p.setFont(_mono(8))
+            p.setPen(QPen(QColor(0, 150, 200, 120)))
+            p.drawText(lx + 4, iy, ">")
+            p.setPen(QPen(QColor(0, 190, 220, 170 if done else 80)))
+            p.drawText(lx + 16, iy, item)
+            if done:
+                p.setPen(QPen(QColor(0, 255, 136, 200)))
+                p.setFont(_mono(8, True))
+                p.drawText(lx + lw - 68, iy, "COMPLETE")
+        rw = 230
+        rx = w - rw - 24
+        info_y = 50
+        self._draw_panel_box(p, rx, info_y, rw, 155)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(rx + 8, info_y + 18, "SYSTEM INFORMATION")
+        info_rows = [
+            ("VERSION", OS_VERSION),
+            ("BUILD", self._build_date),
+            ("UPTIME", "00:00:08"),
+            ("USER", USER_NAME),
+            ("STATUS", "ONLINE" if self._show_welcome else "BOOT"),
+        ]
+        for i, (k, v) in enumerate(info_rows):
+            iy = info_y + 34 + i * 22
+            p.setFont(_mono(8))
+            p.setPen(QPen(QColor(0, 150, 200, 140)))
+            p.drawText(rx + 8, iy, k)
+            col = QColor(0, 255, 136, 220) if k == "STATUS" and self._show_welcome else QColor(0, 212, 255, 200)
+            p.setPen(QPen(col))
+            p.setFont(_mono(8, True))
+            vw2 = p.fontMetrics().horizontalAdvance(v)
+            p.drawText(rx + rw - vw2 - 10, iy, v)
+        mem_y = info_y + 165
+        self._draw_panel_box(p, rx, mem_y, rw, 105)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(rx + 8, mem_y + 18, "MEMORY USAGE")
+        mcc_x = rx + rw // 2
+        mcc_y = mem_y + 65
+        self._draw_donut(p, mcc_x, mcc_y, 32, self._mem_pct / 100, C_CYAN)
+        p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        p.setPen(QPen(C_CYAN))
+        txt = f"{int(self._mem_pct)}%"
+        tw2 = p.fontMetrics().horizontalAdvance(txt)
+        p.drawText(int(mcc_x - tw2 / 2), mcc_y + 5, txt)
+        p.setFont(_mono(7))
+        p.setPen(QPen(QColor(0, 150, 200, 130)))
+        sub = f"{self._mem_pct * 0.08:.1f} GB / 8.0 GB"
+        sw2 = p.fontMetrics().horizontalAdvance(sub)
+        p.drawText(int(mcc_x - sw2 / 2), mcc_y + 20, sub)
+        proc_y = mem_y + 115
+        self._draw_panel_box(p, rx, proc_y, rw, 70)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(rx + 8, proc_y + 18, "PROCESSOR")
+        self._draw_sparkline(p, rx + 8, proc_y + 26, rw - 16, 28)
+        pct_str = f"{int(self._cpu_pct)}%"
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 200)))
+        pw = p.fontMetrics().horizontalAdvance(pct_str)
+        p.drawText(rx + rw - pw - 10, proc_y + 18, pct_str)
+        net_y = proc_y + 80
+        self._draw_panel_box(p, rx, net_y, rw, 80)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(rx + 8, net_y + 18, "NETWORK")
+        _mark("world_dots")
+        self._draw_world_dots(p, rx + 8, net_y + 24, rw - 16, 38)
+        p.setFont(_mono(7))
+        p.setPen(QPen(QColor(0, 150, 200, 130)))
+        p.drawText(rx + 8, net_y + 68, "GLOBAL CONNECTIVITY")
+        p.setFont(_mono(7, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(rx + rw - 36, net_y + 68, f"{int(self._net_pct)}%")
+        pwr_y = net_y + 90
+        self._draw_panel_box(p, rx, pwr_y, rw, 70)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 180)))
+        p.drawText(rx + 8, pwr_y + 18, "POWER LEVEL")
+        seg_count = 20
+        seg_filled = int(seg_count * self._pwr_pct / 100)
+        seg_x = rx + 8
+        seg_y = pwr_y + 26
+        seg_w = (rw - 20) // seg_count - 1
+        _brush_filled = QBrush(QColor(0, 212, 255, 200))
+        _brush_empty  = QBrush(QColor(0, 60, 100, 60))
+        p.setPen(Qt.PenStyle.NoPen)
+        for s in range(seg_count):
+            p.setBrush(_brush_filled if s < seg_filled else _brush_empty)
+            p.drawRect(seg_x + s * (seg_w + 1), seg_y, seg_w, 14)
+        p.setFont(_mono(8, True))
+        p.setPen(QPen(QColor(0, 212, 255, 200)))
+        p.drawText(rx + rw - 60, pwr_y + 56, f"{int(self._pwr_pct)}%  OPTIMAL")
+        arc_size = min(w - lw - rw - 80, h - 160)
+        arc_size = max(arc_size, 200)
+        _mark("right_panels")
+        _mark("arc_reactor")
+        self._draw_arc_reactor_custom(p, cx, cy, arc_size / 2 - 10)
+        _mark("welcome_box")
+        if self._show_welcome and self._welcome_alpha > 0 and self._welcome_px is not None:
+            box_x2 = int(cx - 280)
+            box_y2 = int(h - 170)
+            p.setOpacity(self._welcome_alpha)
+            p.drawPixmap(box_x2, box_y2, self._welcome_px)
+            p.setOpacity(1.0)
+            if not self._finishing:
+                self._draw_waveform(p, box_x2, box_y2 + 78, 560, 14)
+        _mark("fade_out")
+        if self._fade_out > 0:
+            # setOpacity -> GPU compositing, avoids ~825ms software blend
+            p.setOpacity(self._fade_out)
+            p.fillRect(self.rect(), QColor(2, 6, 14))
+            p.setOpacity(1.0)
+        _pe = _pt.perf_counter()
+        if _pe - _ps > 0.05:
+            prev = _ps
+            for label, ts in _ts.items():
+                print(f"  {label}: {(ts-prev)*1000:.1f}ms")
+                prev = ts
+            print(f"  end: {(_pe-prev)*1000:.1f}ms")
+            print(f"[SLOW PAINT] {(_pe-_ps)*1000:.0f}ms at t={self._t:.2f}s")
+
+    def _build_welcome_pixmap(self):
+        """Pre-render welcome box to a QPixmap so paintEvent just blits it."""
+        px = QPixmap(560, 90)
+        px.fill(Qt.GlobalColor.transparent)
+        wp = QPainter(px)
+        wp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        wp.setBrush(QBrush(QColor(0, 10, 24, 180)))
+        wp.setPen(QPen(QColor(0, 212, 255, 128), 1))
+        wp.drawRect(0, 0, 559, 89)
+        wp.setFont(_mono(9))
+        wp.setPen(QPen(QColor(0, 170, 200, 178)))
+        line1 = "SYSTEM INITIALIZATION COMPLETE"
+        lw2 = wp.fontMetrics().horizontalAdvance(line1)
+        wp.drawText(int(280 - lw2 / 2), 22, line1)
+        wp.setFont(QFont("Courier New", 20, QFont.Weight.Bold))
+        wp.setPen(QPen(QColor(0, 212, 255, 255)))
+        line2 = f"WELCOME BACK, {USER_NAME}."
+        lw3 = wp.fontMetrics().horizontalAdvance(line2)
+        wp.drawText(int(280 - lw3 / 2), 52, line2)
+        wp.setFont(_mono(8))
+        wp.setPen(QPen(QColor(0, 150, 200, 153)))
+        line3 = "JARVIS IS ONLINE AND AT YOUR SERVICE"
+        lw4 = wp.fontMetrics().horizontalAdvance(line3)
+        wp.drawText(int(280 - lw4 / 2), 70, line3)
+        wp.end()
+        return px
+
+    def _draw_panel_box(self, p, x, y, w, h):
+        p.setBrush(QBrush(QColor(0, 8, 22, 180)))
+        p.setPen(QPen(QColor(0, 150, 200, 60), 0.8))
+        p.drawRect(x, y, w, h)
+        p.setPen(QPen(QColor(0, 212, 255, 90), 1.2))
+        p.drawLine(x, y, x + w, y)
+
+    def _build_arc_static(self, cx, cy, R):
+        """Render all static (non-rotating) arc reactor layers to a QPixmap once."""
+        size = int(R * 2 + 8)
+        ox = int(cx - R - 4)
+        oy = int(cy - R - 4)
+        px = QPixmap(size, size)
+        px.fill(Qt.GlobalColor.transparent)
+        wp = QPainter(px)
+        wp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        # local coords: centre at (R+4, R+4)
+        lx, ly = R + 4, R + 4
+        # Background radial gradient
+        bg = QRadialGradient(lx, ly, R)
+        bg.setColorAt(0, QColor(0, 25, 50, 230))
+        bg.setColorAt(0.7, QColor(0, 12, 28, 210))
+        bg.setColorAt(1, QColor(0, 5, 15, 180))
+        wp.setBrush(QBrush(bg))
+        wp.setPen(Qt.PenStyle.NoPen)
+        wp.drawEllipse(QPointF(lx, ly), R, R)
+        # Dark border ring
+        wp.setPen(QPen(QColor(15, 30, 45, 240), R * 0.10))
+        wp.setBrush(Qt.BrushStyle.NoBrush)
+        wp.drawEllipse(QPointF(lx, ly), R * 0.95, R * 0.95)
+        # Glow rings around R3
+        R3 = R * 0.70
+        for gw, ga in [(R * 0.10, 10), (R * 0.06, 25), (R * 0.025, 80), (R * 0.012, 200)]:
+            wp.setPen(QPen(QColor(0, 180, 255, ga), gw))
+            wp.setBrush(Qt.BrushStyle.NoBrush)
+            wp.drawEllipse(QPointF(lx, ly), R3, R3)
+        # Static thin ring guides
+        for rf, a in [(0.48, 40), (0.33, 25)]:
+            ri = R * rf
+            wp.setPen(QPen(QColor(0, 160, 210, a), 1))
+            wp.setBrush(Qt.BrushStyle.NoBrush)
+            wp.drawEllipse(QPointF(lx, ly), ri, ri)
+        # Tick marks (fixed positions — rotation is so slow it's imperceptible if static)
+        R2 = R * 0.82
+        for i in range(24):
+            a = math.radians(i * 15)
+            ca, sa = math.cos(a), math.sin(a)
+            is_major = (i % 4 == 0)
+            r0 = R2 - R * (0.065 if is_major else 0.032)
+            r1 = R2
+            wp.setPen(QPen(QColor(0, 200, 255, 160 if is_major else 50),
+                           1.3 if is_major else 0.6))
+            wp.drawLine(QPointF(lx + ca * r0, ly + sa * r0),
+                        QPointF(lx + ca * r1, ly + sa * r1))
+        wp.end()
+        return px, ox, oy
+
+    def _draw_arc_reactor_custom(self, p, cx, cy, R):
+        # Pixmap is pre-built in _step at 20fps — just blit it here
+        if hasattr(self, '_arc_px'):
+            p.drawPixmap(self._arc_px_ox, self._arc_px_oy, self._arc_px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    def _draw_donut(self, p, cx, cy, R, frac, color):
+        p.setPen(QPen(QColor(0, 40, 70, 120), R * 0.35))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), R, R)
+        p.setPen(QPen(color, R * 0.32))
+        p.drawArc(QRectF(cx - R, cy - R, R * 2, R * 2), int(90 * 16), int(-frac * 360 * 16))
+
+    def _draw_heartbeat(self, p, x, y, w, h):
+        p.setPen(QPen(C_CYAN, 1.2))
+        t = self._t
+        n = 80
+        poly = QPolygonF()
+        for i in range(n):
+            fx = i / (n - 1)
+            phase = (fx * 4 + t * 1.5) % 1.0
+            if 0.3 < phase < 0.5:
+                fy = 0.5 + math.sin((phase - 0.3) / 0.2 * math.pi) * 0.9
+            else:
+                fy = 0.5 + self._hb_noise[i]
+            poly.append(QPointF(x + fx * w, y + (1 - fy) * h))
+        p.drawPolyline(poly)
+
+    def _draw_sparkline(self, p, x, y, w, h):
+        p.setPen(QPen(C_CYAN2, 1))
+        t = self._t
+        n = 50
+        poly = QPolygonF()
+        for i in range(n):
+            fx = i / (n - 1)
+            fy = 0.5 + 0.4 * math.sin((fx * 6 + t * 0.8) * math.pi) * math.cos(fx * 3.14)
+            poly.append(QPointF(x + fx * w, y + (1 - fy) * h))
+        p.drawPolyline(poly)
+
+    def _draw_world_dots(self, p, x, y, w, h):
+        key = (x, y, w, h)
+        if key != self._world_dots_size:
+            # Rebuild only when geometry changes (typically never after first frame)
+            self._world_dots_bright = QPolygonF()
+            self._world_dots_dim = QPolygonF()
+            for i, (fx, fy) in enumerate(self._world_dots):
+                pt = QPointF(x + fx * w, y + fy * h)
+                if self._dot_brightness[i % len(self._dot_brightness)]:
+                    self._world_dots_bright.append(pt)
+                else:
+                    self._world_dots_dim.append(pt)
+            self._world_dots_size = key
+        p.setPen(QPen(QColor(0, 212, 255, 160), 3))
+        p.drawPoints(self._world_dots_bright)
+        p.setPen(QPen(QColor(0, 212, 255, 60), 2))
+        p.drawPoints(self._world_dots_dim)
+
+    def _draw_waveform(self, p, x, y, w, h):
+        t = self._t
+        p.setPen(QPen(QColor(0, 212, 255, 120), 1))
+        n = 100
+        poly = QPolygonF()
+        for i in range(n):
+            fx = i / (n - 1)
+            amp = 0.5 * math.sin(fx * 20 + t * 3) * math.sin(fx * 7 - t)
+            poly.append(QPointF(x + fx * w, y + h / 2 + amp * h / 2))
+        p.drawPolyline(poly)
+
+# ═══════════════════════════════════════════════════════════
+#  HOLOGRAPHIC BACKGROUND
+# ═══════════════════════════════════════════════════════════
+class HoloBackground(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._off = 0
+        self._pt = 0
+        self._sweep = 0.0
+        self._particles = []
+        for _ in range(PARTICLE_COUNT):
+            self._particles.append({
+                "x": random.uniform(0, 1),
+                "y": random.uniform(0, 1),
+                "vx": random.uniform(-0.0002, 0.0002),
+                "vy": random.uniform(-0.0005, -0.0001),
+                "life": random.uniform(0.3, 1.0),
+                "decay": random.uniform(0.001, 0.003),
+                "size": random.uniform(1, 2),
+            })
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.start(1000 // 10)  # 10fps — subtle background, saves paint budget
+
+    def _step(self):
+        self._off = (self._off + 1) % 100
+        self._pt = (self._pt + 1) % 360
+        self._sweep = (self._sweep + 0.4) % 360
+        for p in self._particles:
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
+            p["life"] = max(0, p["life"] - p["decay"])
+        self._particles = [p for p in self._particles if p["life"] > 0]
+        while len(self._particles) < PARTICLE_COUNT:
+            self._particles.append({
+                "x": random.uniform(0, 1),
+                "y": 1.0,
+                "vx": random.uniform(-0.0002, 0.0002),
+                "vy": random.uniform(-0.0005, -0.0001),
+                "life": 1.0,
+                "decay": random.uniform(0.001, 0.003),
+                "size": random.uniform(1, 2),
+            })
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        p = QPainter(self)
+        # Grid — rebuild pixmap only when size changes
+        grid_key = (w, h)
+        if not hasattr(self, '_grid_px') or self._grid_size != grid_key:
+            self._grid_size = grid_key
+            self._grid_px = QPixmap(w, h)
+            self._grid_px.fill(Qt.GlobalColor.transparent)
+            gp = QPainter(self._grid_px)
+            step = 80
+            pen = QPen()
+            pen.setWidthF(0.4)
+            for gx in range(0, w + step, step):
+                pen.setColor(QColor(0, 160, 220, 10))
+                gp.setPen(pen)
+                gp.drawLine(gx, 0, gx, h)
+            for gy in range(0, h + step, step):
+                pen.setColor(QColor(0, 160, 220, 10))
+                gp.setPen(pen)
+                gp.drawLine(0, gy, w, gy)
+            gp.end()
+            # Also rebuild vignette brush when size changes
+            vg = QRadialGradient(cx, cy, max(w, h) * 0.7)
+            vg.setColorAt(0,    QColor(0, 0, 0, 0))
+            vg.setColorAt(0.65, QColor(0, 0, 0, 0))
+            vg.setColorAt(1,    QColor(0, 0, 12, 220))
+            self._vignette_brush = QBrush(vg)
+        # Scroll grid by blitting with offset
+        off = self._off % 80
+        p.drawPixmap(-off, 0, self._grid_px)
+        if off > 0:
+            p.drawPixmap(w - off, 0, self._grid_px, 0, 0, off, h)
+        # Vignette
+        p.setBrush(self._vignette_brush)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(self.rect())
+        # Particles — no per-particle brush allocation
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for pt in self._particles:
+            a = int(120 * pt["life"])
+            p.setBrush(QBrush(QColor(0, 180, 220, a)))
+            p.drawEllipse(QPointF(pt["x"] * w, pt["y"] * h), pt["size"], pt["size"])
+
+# ═══════════════════════════════════════════════════════════
+#  MODE SELECTION SCREEN
+# ═══════════════════════════════════════════════════════════
+class ModeCard(QWidget):
+    clicked = pyqtSignal(str)
+
+    def __init__(self, mode, icon, title, subtitle, accent, parent=None):
+        super().__init__(parent)
+        self.mode = mode
+        self.accent = QColor(accent)
+        self._hover = False
+        self._press = False
+        self._glow = 0.0
+        self.setFixedSize(320, 220)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(28, 28, 28, 24)
+        lay.setSpacing(12)
+
+        icon_lbl = QLabel(icon)
+        icon_lbl.setFont(QFont("Arial", 42))
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setStyleSheet("background:transparent;color:" + accent + ";")
+
+        title_lbl = QLabel(title)
+        title_lbl.setFont(_orbitron(16, True))
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_lbl.setStyleSheet("background:transparent;color:" + accent + ";")
+
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setFont(_mono(9))
+        sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub_lbl.setWordWrap(True)
+        sub_lbl.setStyleSheet("background:transparent;color:rgba(160,220,240,160);")
+
+        lay.addStretch()
+        lay.addWidget(icon_lbl)
+        lay.addWidget(title_lbl)
+        lay.addWidget(sub_lbl)
+        lay.addStretch()
+
+        self._glow_timer = QTimer(self)
+        self._glow_timer.timeout.connect(self._pulse)
+        self._glow_t = 0.0
+
+    def _pulse(self):
+        self._glow_t += 0.06
+        self._glow = 0.5 + 0.5 * math.sin(self._glow_t)
+        self.update()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._glow_timer.start(30)
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._press = False
+        self._glow_timer.stop()
+        self._glow = 0.0
+        self.update()
+
+    def mousePressEvent(self, e):
+        self._press = True
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._press and self.rect().contains(e.pos()):
+            _play_sound("select")
+            self.clicked.emit(self.mode)
+        self._press = False
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self.rect().adjusted(2, 2, -2, -2)
+
+        # Background
+        bg = QColor(0, 8, 22, 230)
+        p.setBrush(QBrush(bg))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(r, 16, 16)
+
+        # Border glow
+        if self._hover:
+            a = int(180 + 70 * self._glow)
+            w = 2.0 + self._glow * 1.5
+        else:
+            a = 80
+            w = 1.0
+        c = QColor(self.accent)
+        c.setAlpha(a)
+        p.setPen(QPen(c, w))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r, 16, 16)
+
+        # Corner accents
+        ca = QColor(self.accent); ca.setAlpha(200 if self._hover else 100)
+        p.setPen(QPen(ca, 2))
+        sz = 18
+        for x, y, dx, dy in [(r.left(), r.top(), 1, 1), (r.right(), r.top(), -1, 1),
+                              (r.left(), r.bottom(), 1, -1), (r.right(), r.bottom(), -1, -1)]:
+            p.drawLine(x, y + dy * 6, x, y + dy * sz)
+            p.drawLine(x + dx * 6, y, x + dx * sz, y)
+
+        # Hover inner glow
+        if self._hover:
+            grad = QRadialGradient(QPointF(r.center()), max(r.width(), r.height()) * 0.6)
+            gc = QColor(self.accent); gc.setAlpha(int(25 * self._glow))
+            grad.setColorAt(0, gc)
+            gc2 = QColor(self.accent); gc2.setAlpha(0)
+            grad.setColorAt(1, gc2)
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(r, 16, 16)
+
+        # Press dim
+        if self._press:
+            p.setBrush(QBrush(QColor(0, 0, 0, 60)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(r, 16, 16)
+
+
+class ModeSelectScreen(QWidget):
+    mode_selected = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        self._fade_in = 0.0
+        self._fade_out = 0.0
+        self._fading_out = False
+        self._selected_mode = None
+        self._ready = False  # cards disabled until model is warm
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        # Content container
+        inner = QWidget()
+        inner.setStyleSheet("background:transparent;")
+        self._inner = inner
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setSpacing(40)
+
+        # Title
+        title = QLabel("SELECT INTERFACE MODE")
+        title.setFont(_orbitron(18, True))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("background:transparent;color:rgba(0,212,255,220);")
+        sub = QLabel("Choose how you want to interact with J.A.R.V.I.S")
+        sub.setFont(_mono(10))
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet("background:transparent;color:rgba(0,160,200,140);")
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(8)
+        title_col.addWidget(title)
+        title_col.addWidget(sub)
+
+        # Cards row
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(48)
+        cards_row.setContentsMargins(0, 0, 0, 0)
+
+        self._chat_card = ModeCard(
+            "chat", "⌨", "CHAT MODE",
+            "Type your commands and\nreceive detailed responses",
+            "#00D4FF"
+        )
+        self._voice_card = ModeCard(
+            "voice", "🎙", "VOICE MODE",
+            "Speak naturally and hear\nJarvis respond in real time",
+            "#00FF88"
+        )
+        self._chat_card.clicked.connect(self._on_mode)
+        self._voice_card.clicked.connect(self._on_mode)
+        self._chat_card.setEnabled(False)
+        self._voice_card.setEnabled(False)
+
+        cards_row.addStretch()
+        cards_row.addWidget(self._chat_card)
+        cards_row.addWidget(self._voice_card)
+        cards_row.addStretch()
+
+        # Status label shown below cards
+        self._status_lbl = QLabel("⟳  LOADING AI MODEL...")
+        self._status_lbl.setFont(_mono(9))
+        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_lbl.setStyleSheet("background:transparent;color:rgba(255,180,0,200);")
+
+        inner_lay.addStretch()
+        inner_lay.addLayout(title_col)
+        inner_lay.addLayout(cards_row)
+        inner_lay.addWidget(self._status_lbl)
+        inner_lay.addStretch()
+
+        lay.addWidget(inner)
+
+        # Fade-in timer — started in showEvent
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._animate)
+
+        # Apply initial opacity via setWindowOpacity — no software rasterization
+        self._current_opacity = 0.0
+        # No QGraphicsOpacityEffect — that causes 800ms software rasterization freeze on first show
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._fade_in = 0.0
+        self._fade_out = 0.0
+        self._fading_out = False
+        self._current_opacity = 0.0
+        self._inner.setVisible(True)
+        self._anim_timer.start(16)
+
+    def _animate(self):
+        if not self._fading_out:
+            self._fade_in = min(1.0, self._fade_in + 0.07)
+            self._current_opacity = self._fade_in
+        else:
+            self._fade_out = min(1.0, self._fade_out + 0.08)
+            self._current_opacity = max(0.0, 1.0 - self._fade_out)
+            if self._fade_out >= 1.0:
+                self._anim_timer.stop()
+                self.mode_selected.emit(self._selected_mode)
+        # Show inner widget once opacity crosses threshold — avoids rasterization at zero opacity
+        self._inner.setVisible(self._current_opacity > 0.05)
+        self.update()
+
+    def set_ready(self, ready):
+        """Called when model warmup completes."""
+        self._ready = ready
+        self._chat_card.setEnabled(ready)
+        self._voice_card.setEnabled(ready)
+        self._status_lbl.setText("SELECT A MODE" if ready else "⟳  LOADING AI MODEL...")
+        self._status_lbl.setStyleSheet(
+            "background:transparent;color:rgba(0,212,255,200);" if ready
+            else "background:transparent;color:rgba(255,180,0,200);")
+        self.update()
+
+    def _on_mode(self, mode):
+        if self._fading_out or not self._ready:
+            return
+        self._selected_mode = mode
+        self._fading_out = True
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(2, 6, 14, 240))
+        # Subtle scan lines
+        for y in range(0, self.height(), 4):
+            a = int(8 * self._current_opacity)
+            p.setPen(QPen(QColor(0, 80, 120, a), 1))
+            p.drawLine(0, y, self.width(), y)
+        # Divider line above cards
+        cx = self.width() // 2
+        cy = self.height() // 2
+        p.setPen(QPen(QColor(0, 212, 255, int(40 * self._current_opacity)), 1))
+        p.drawLine(cx - 300, cy - 80, cx + 300, cy - 80)
+
+
+# ═══════════════════════════════════════════════════════════
+#  MAIN WINDOW
+# ═══════════════════════════════════════════════════════════
+class JarvisMainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("J.A.R.V.I.S  —  HOLOGRAPHIC INTERFACE  v5.1")
+        self.setMinimumSize(1280, 820)
+        self.resize(1540, 900)
+        self.setStyleSheet("background-color:#02060E;")
+
+        self._stack = QStackedWidget()
+        self.setCentralWidget(self._stack)
+
+        self._bg = HoloBackground(self)
+        self._bg.lower()
+        self._bg.resize(self.size())
+
+        self._startup = StartupScreen()
+        self._startup.boot_complete.connect(self._on_boot_done)
+        self._stack.addWidget(self._startup)
+
+        self._mode_screen = ModeSelectScreen()
+        self._mode_screen.mode_selected.connect(self._on_mode_selected)
+        self._stack.addWidget(self._mode_screen)
+
+        self._dashboard = ChatDashboard()
+        self._stack.addWidget(self._dashboard)
+        self._stack.setCurrentWidget(self._startup)
+
+        # Pre-generate boot sounds in background thread
+        threading.Thread(target=_init_boot_sounds, daemon=True).start()
+        # Preload Kokoro voice in background thread
+        threading.Thread(target=preload_piper_voice, daemon=True).start()
+
+        # Warm the model AFTER boot animation to avoid freezing the startup screen
+        self._warmup = ModelWarmupWorker()
+        self._warmup.warmup_complete.connect(self._on_warmup_done)
+        self._boot_done = False
+
+    def _on_warmup_done(self):
+        self._startup.notify_model_ready()
+        if hasattr(self, '_dashboard'):
+            self._dashboard._model_ready = True
+            self._dashboard.input.setEnabled(True)
+            self._dashboard.send_btn.setEnabled(True)
+        if hasattr(self, '_mode_screen'):
+            self._mode_screen.set_ready(True)
+
+    def _on_boot_done(self):
+        self._boot_done = True
+        # Show mode selection screen instead of going straight to dashboard
+        self._stack.setCurrentWidget(self._mode_screen)
+        # Start model warmup NOW — after animation — so it doesn't freeze startup
+        if MODEL_WARMUP_ENABLED:
+            self._warmup.start()
+
+    def _on_mode_selected(self, mode):
+        if mode == "voice":
+            # Open dashboard and immediately trigger voice mode
+            self._stack.setCurrentWidget(self._dashboard)
+            self._dashboard.input.setFocus()
+            QTimer.singleShot(200, self._dashboard._open_voice)
+        else:
+            self._stack.setCurrentWidget(self._dashboard)
+            self._dashboard.input.setFocus()
+
+    def _show_dashboard(self):
+        self._stack.setCurrentWidget(self._dashboard)
+        self._dashboard.input.setFocus()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._bg.resize(self.size())
+
+    def closeEvent(self, event):
+        self._dashboard.on_close()
+        event.accept()
+
+# ═══════════════════════════════════════════════════════════
 #  ENTRY POINT
-# ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     app = QApplication(sys.argv)
+    _register_fonts()  # must be before any widgets — prevents 140ms font alias lookup freeze
+    _FONT_CACHE.clear()  # clear any pre-registration cache entries
     app.setStyle("Fusion")
     palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(1, 8, 16))
+    palette.setColor(QPalette.ColorRole.Window, QColor(2, 6, 14))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(0, 212, 255))
     app.setPalette(palette)
-    window = JarvisHolographicWindow()
+    window = JarvisMainWindow()
     window.show()
     sys.exit(app.exec())
-
